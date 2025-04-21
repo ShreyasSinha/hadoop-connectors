@@ -357,7 +357,7 @@ public class VectoredIOImpl implements VectoredIO {
       GoogleCloudStorageReadOptions.Builder builder = readOptions.toBuilder();
       // For single range read we don't want Read channel to adjust around on channel boundaries as
       // channel is used just for one read request.
-      builder.setFadvise(GoogleCloudStorageReadOptions.Fadvise.SEQUENTIAL);
+      builder.setReadExactRequestedBytesEnabled(true);
       return builder.build();
     }
   }
