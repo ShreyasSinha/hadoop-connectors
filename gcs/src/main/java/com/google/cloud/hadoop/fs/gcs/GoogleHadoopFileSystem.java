@@ -214,7 +214,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
   /** Underlying GCS file system object. */
   private Supplier<GoogleCloudStorageFileSystem> gcsFsSupplier;
 
-  private Supplier<VectoredIOImpl> vectoredIOSupplier;
+  private Supplier<VectoredIO> vectoredIOSupplier;
 
   private boolean gcsFsInitialized = false;
   private boolean vectoredIOInitialized = false;
@@ -397,7 +397,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
           Suppliers.memoize(
               () -> {
                 try {
-                  VectoredIOImpl vectoredIO =
+                  VectoredIO vectoredIO =
                       new VectoredIOImpl(
                           GoogleHadoopFileSystemConfiguration.getVectoredReadOptionBuilder(config)
                               .build(),
@@ -1680,7 +1680,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
     return gcsFsSupplier.get();
   }
 
-  public Supplier<VectoredIOImpl> getVectoredIOSupplier() {
+  public Supplier<VectoredIO> getVectoredIOSupplier() {
     return vectoredIOSupplier;
   }
 
