@@ -562,6 +562,11 @@ public class GoogleHadoopFileSystemConfiguration {
           "fs.gs.operation.move.enable",
           GoogleCloudStorageOptions.DEFAULT.isMoveOperationEnabled());
 
+  /** Configuration key for enabling bidi API for Rapid Storage in gcs. */
+  public static final HadoopConfigurationProperty<Boolean> RAPID_STORAGE_BIDI_API_ENABLE =
+      new HadoopConfigurationProperty<>(
+          "fs.gs.operation.bidi.enable",
+          GoogleCloudStorageOptions.DEFAULT.isBidiApiEnabled());
   static GoogleCloudStorageFileSystemOptions.Builder getGcsFsOptionsBuilder(Configuration config) {
     return GoogleCloudStorageFileSystemOptions.builder()
         .setBucketDeleteEnabled(GCE_BUCKET_DELETE_ENABLE.get(config, config::getBoolean))
