@@ -39,7 +39,7 @@ public final class GoogleHadoopFileSystemIntegrationHelper {
    * needed for setting up the credentials of a real GoogleCloudStorage.
    */
   public static Configuration getTestConfig() {
-    Configuration config = new Configuration(); `
+    Configuration config = new Configuration();
     config.setBoolean("fs.gs.implicit.dir.repair.enable", true);
     // Allow buckets to be deleted in test cleanup:
     config.setBoolean("fs.gs.bucket.delete.enable", true);
