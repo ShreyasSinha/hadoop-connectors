@@ -15,9 +15,7 @@ import org.apache.hadoop.fs.FileRange;
 public class BidiVectoredIOImpl implements VectoredIO{
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
-  private final Storage storage;
   public BidiVectoredIOImpl() {
-    storage =
   }
 
   @Override

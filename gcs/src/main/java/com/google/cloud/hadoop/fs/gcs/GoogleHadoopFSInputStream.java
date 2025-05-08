@@ -175,11 +175,13 @@ class GoogleHadoopFSInputStream extends FSInputStream implements IOStatisticsSou
   @Override
   public void readVectored(List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate)
       throws IOException {
+
     trackDuration(
         streamStatistics,
         STREAM_READ_VECTORED_OPERATIONS.getSymbol(),
         () -> {
           long startTimeNs = System.nanoTime();
+          gcsFs.getGcs().open()
           vectoredIOSupplier.get().readVectored(ranges, allocate, gcsFs, fileInfo, gcsPath);
           statistics.incrementReadOps(1);
           vectoredReadStats.updateVectoredReadStreamStats(startTimeNs);
