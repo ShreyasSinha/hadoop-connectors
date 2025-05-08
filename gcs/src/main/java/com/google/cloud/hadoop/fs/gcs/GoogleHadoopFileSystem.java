@@ -26,6 +26,7 @@ import static com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystemConfiguration
 import static com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystemConfiguration.GCS_OUTPUT_STREAM_SYNC_MIN_INTERVAL;
 import static com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystemConfiguration.GCS_WORKING_DIRECTORY;
 import static com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystemConfiguration.PERMISSIONS_TO_REPORT;
+import static com.google.cloud.hadoop.gcsio.GoogleCloudStorageClientImpl.createStorage;
 import static com.google.cloud.hadoop.util.HadoopCredentialsConfiguration.CLOUD_PLATFORM_SCOPE;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -214,7 +215,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
   /** Underlying GCS file system object. */
   private Supplier<GoogleCloudStorageFileSystem> gcsFsSupplier;
 
-  private Supplier<VectoredIOImpl> vectoredIOSupplier;
+  private Supplier<VectoredIO> vectoredIOSupplier;
 
   private boolean gcsFsInitialized = false;
   private boolean vectoredIOInitialized = false;
@@ -393,22 +394,41 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
       FileSystem.Statistics statistics)
       throws IOException {
     if (vectoredIOSupplier == null) {
-      vectoredIOSupplier =
-          Suppliers.memoize(
-              () -> {
-                try {
-                  VectoredIOImpl vectoredIO =
-                      new VectoredIOImpl(
-                          GoogleHadoopFileSystemConfiguration.getVectoredReadOptionBuilder(config)
-                              .build(),
-                          globalStorageStatistics,
-                          statistics);
-                  vectoredIOInitialized = true;
-                  return vectoredIO;
-                } catch (Exception e) {
-                  throw new RuntimeException("Failure initializing vectoredIO", e);
-                }
-              });
+      if(true){
+        vectoredIOSupplier =
+            Suppliers.memoize(
+                () -> {
+                  try {
+                    VectoredIO vectoredIO =
+                        new BidiVectoredIOImpl(
+                            createStorage(
+                                credentials, options, gRPCInterceptors, pCUExecutorService, downscopedAccessTokenFn)
+                            );
+                    vectoredIOInitialized = true;
+                    return vectoredIO;
+                  } catch (Exception e) {
+                    throw new RuntimeException("Failure initializing vectoredIO", e);
+                  }
+                });
+      }
+      else {
+        vectoredIOSupplier =
+            Suppliers.memoize(
+                () -> {
+                  try {
+                    VectoredIO vectoredIO =
+                        new VectoredIOImpl(
+                            GoogleHadoopFileSystemConfiguration.getVectoredReadOptionBuilder(config)
+                                .build(),
+                            globalStorageStatistics,
+                            statistics);
+                    vectoredIOInitialized = true;
+                    return vectoredIO;
+                  } catch (Exception e) {
+                    throw new RuntimeException("Failure initializing vectoredIO", e);
+                  }
+                });
+      }
     }
   }
 
@@ -1680,7 +1700,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
     return gcsFsSupplier.get();
   }
 
-  public Supplier<VectoredIOImpl> getVectoredIOSupplier() {
+  public Supplier<VectoredIO> getVectoredIOSupplier() {
     return vectoredIOSupplier;
   }
 
