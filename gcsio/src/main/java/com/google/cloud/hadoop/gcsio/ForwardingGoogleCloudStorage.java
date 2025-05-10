@@ -127,6 +127,12 @@ public class ForwardingGoogleCloudStorage implements GoogleCloudStorage {
   }
 
   @Override
+  public void deleteFolders(List<FolderInfo> folders) throws IOException {
+    logger.atFiner().log("%s.deleteFolders(%s)", delegateClassName, folders);
+    delegate.deleteFolders(folders);
+  }
+
+  @Override
   public void copy(
       String srcBucketName,
       List<String> srcObjectNames,
@@ -144,6 +150,13 @@ public class ForwardingGoogleCloudStorage implements GoogleCloudStorage {
       throws IOException {
     logger.atFiner().log("%s.copy(%s)", delegateClassName, sourceToDestinationObjectsMap);
     delegate.copy(sourceToDestinationObjectsMap);
+  }
+
+  @Override
+  public void move(Map<StorageResourceId, StorageResourceId> sourceToDestinationObjectsMap)
+      throws IOException {
+    logger.atFiner().log("%s.move(%s)", delegateClassName, sourceToDestinationObjectsMap);
+    delegate.move(sourceToDestinationObjectsMap);
   }
 
   @Override
@@ -186,6 +199,17 @@ public class ForwardingGoogleCloudStorage implements GoogleCloudStorage {
         "%s.listObjectInfoPage(%s, %s, %s, %s)",
         delegateClassName, bucketName, objectNamePrefix, listOptions, pageToken);
     return delegate.listObjectInfoPage(bucketName, objectNamePrefix, listOptions, pageToken);
+  }
+
+  @Override
+  public ListPage<FolderInfo> listFolderInfoForPrefixPage(
+      String bucketName,
+      String folderNamePrefix,
+      ListFolderOptions listFolderOptions,
+      String pageToken)
+      throws IOException {
+    return delegate.listFolderInfoForPrefixPage(
+        bucketName, folderNamePrefix, listFolderOptions, pageToken);
   }
 
   @Override

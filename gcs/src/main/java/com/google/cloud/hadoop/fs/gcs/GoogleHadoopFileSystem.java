@@ -44,6 +44,7 @@ import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystem;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystemImpl;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystemOptions;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageItemInfo;
+import com.google.cloud.hadoop.gcsio.GoogleCloudStorageStatistics;
 import com.google.cloud.hadoop.gcsio.ListFileOptions;
 import com.google.cloud.hadoop.gcsio.StorageResourceId;
 import com.google.cloud.hadoop.gcsio.UpdatableItemInfo;
@@ -90,6 +91,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
@@ -171,6 +173,8 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
   /** Identifies this version of the {@link GoogleHadoopFileSystem} library. */
   static final String GHFS_ID;
 
+  static final String GETFILESTATUS_FILETYPE_HINT = "fs.gs.getfilestatus.filetype.hint";
+
   static {
     VERSION =
         PropertyUtil.getPropertyOrDefault(
@@ -210,7 +214,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
   /** Underlying GCS file system object. */
   private Supplier<GoogleCloudStorageFileSystem> gcsFsSupplier;
 
-  private Supplier<VectoredIOImpl> vectoredIOSupplier;
+  private Supplier<VectoredIO> vectoredIOSupplier;
 
   private boolean gcsFsInitialized = false;
   private boolean vectoredIOInitialized = false;
@@ -239,6 +243,10 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
         GlobalStorageStatistics.INSTANCE.put(
             GhfsGlobalStorageStatistics.NAME, () -> new GhfsGlobalStorageStatistics());
 
+    GlobalStorageStatistics.INSTANCE.put(
+        GhfsThreadLocalStatistics.NAME,
+        () -> ((GhfsGlobalStorageStatistics) globalStats).getThreadLocalStatistics());
+
     if (GhfsGlobalStorageStatistics.class.isAssignableFrom(globalStats.getClass())) {
       globalStorageStatistics = (GhfsGlobalStorageStatistics) globalStats;
     } else {
@@ -250,7 +258,9 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
     }
 
     GoogleCloudStorageEventBus.register(
-        new GoogleCloudStorageEventSubscriber(globalStorageStatistics));
+        GoogleCloudStorageEventSubscriber.getInstance(globalStorageStatistics));
+
+    globalStorageStatistics.incrementCounter(GoogleCloudStorageStatistics.GS_FILESYSTEM_CREATE, 1);
   }
 
   /**
@@ -306,6 +316,9 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
 
     this.traceFactory =
         TraceFactory.get(GCS_OPERATION_TRACE_LOG_ENABLE.get(config, config::getBoolean));
+
+    globalStorageStatistics.incrementCounter(
+        GoogleCloudStorageStatistics.GS_FILESYSTEM_INITIALIZE, 1);
   }
 
   private void initializeFsRoot() {
@@ -383,13 +396,20 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
       vectoredIOSupplier =
           Suppliers.memoize(
               () -> {
+                VectoredIO vectoredIO = null;
                 try {
-                  VectoredIOImpl vectoredIO =
-                      new VectoredIOImpl(
-                          GoogleHadoopFileSystemConfiguration.getVectoredReadOptionBuilder(config)
-                              .build(),
-                          globalStorageStatistics,
-                          statistics);
+                  if (GoogleHadoopFileSystemConfiguration.getGcsOptionsBuilder(config)
+                      .build()
+                      .isBidiApiEnabled()) {
+                    vectoredIO = new BidiVectoredIOImpl();
+                  } else {
+                    vectoredIO =
+                        new VectoredIOImpl(
+                            GoogleHadoopFileSystemConfiguration.getVectoredReadOptionBuilder(config)
+                                .build(),
+                            globalStorageStatistics,
+                            statistics);
+                  }
                   vectoredIOInitialized = true;
                   return vectoredIO;
                 } catch (Exception e) {
@@ -584,6 +604,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
         });
   }
 
+  /** This is an experimental API and can change without notice. */
   public FSDataInputStream open(FileStatus status) throws IOException {
     logger.atFine().log("openWithStatus(%s)", status);
 
@@ -888,7 +909,6 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
           URI gcsPath = getGcsPath(hadoopPath);
           FileInfo fileInfo = getGcsFs().getFileInfo(gcsPath);
           if (!fileInfo.exists()) {
-            GoogleCloudStorageEventBus.postOnException();
             throw new FileNotFoundException(
                 String.format(
                     "%s not found: %s", fileInfo.isDirectory() ? "Directory" : "File", hadoopPath));
@@ -896,6 +916,57 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
           String userName = getUgiUserName();
           return getGoogleHadoopFileStatus(fileInfo, userName);
         });
+  }
+
+  /**
+   * Gets FileStatus with Hint. Can be used if the caller want to pass the path type (file vs
+   * directory) hint. This hint can be used to prioritize GCS API calls inorder to improve
+   * performance and reduce redundant API calls without compromising performance and API behaviour.
+   * Currently, only "file" type hint is supported.
+   *
+   * <p>This is an experimental API can can change without notice.
+   */
+  public FileStatus getFileStatusWithHint(Path hadoopPath, Configuration hint) throws IOException {
+    return trackDurationWithTracing(
+        instrumentation,
+        globalStorageStatistics,
+        GhfsStatistic.INVOCATION_GET_FILE_STATUS,
+        hadoopPath,
+        traceFactory,
+        () -> {
+          checkArgument(hadoopPath != null, "hadoopPath must not be null");
+          checkArgument(hint != null, "hint must not be null");
+
+          checkOpen();
+
+          GoogleCloudStorageFileSystemImpl.PathTypeHint pathTypeHint = getHint(hint, hadoopPath);
+          if (pathTypeHint == GoogleCloudStorageFileSystemImpl.PathTypeHint.NONE) {
+            logger.atWarning().atMostEvery(1, TimeUnit.MINUTES).log(
+                "No file type hint was provided for path %s", hadoopPath);
+          }
+
+          URI gcsPath = getGcsPath(hadoopPath);
+          FileInfo fileInfo = getGcsFs().getFileInfoWithHint(gcsPath, pathTypeHint);
+          if (!fileInfo.exists()) {
+            throw new FileNotFoundException(
+                String.format(
+                    "%s not found: %s", fileInfo.isDirectory() ? "Directory" : "File", hadoopPath));
+          }
+          String userName = getUgiUserName();
+          return getGoogleHadoopFileStatus(fileInfo, userName);
+        });
+  }
+
+  private GoogleCloudStorageFileSystemImpl.PathTypeHint getHint(Configuration hint, Path path) {
+    String hintString = hint.get(GETFILESTATUS_FILETYPE_HINT);
+    if (hintString != null && hintString.toLowerCase().equals("file")) {
+      return GoogleCloudStorageFileSystemImpl.PathTypeHint.FILE;
+    }
+
+    logger.atWarning().atMostEvery(10, TimeUnit.SECONDS).log(
+        "Unexpected hint '%s' received. Ignoring. path=%s", hintString, path);
+
+    return GoogleCloudStorageFileSystemImpl.PathTypeHint.NONE;
   }
 
   @Override
@@ -1228,6 +1299,8 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
     switch (Ascii.toLowerCase(capability)) {
       case CommonPathCapabilities.FS_APPEND:
       case CommonPathCapabilities.FS_CONCAT:
+      case GcsConnectorCapabilities.OPEN_WITH_STATUS:
+      case GcsConnectorCapabilities.GET_FILE_STATUS_WITH_HINT:
         return true;
       default:
         return false;
@@ -1614,7 +1687,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
     return gcsFsSupplier.get();
   }
 
-  public Supplier<VectoredIOImpl> getVectoredIOSupplier() {
+  public Supplier<VectoredIO> getVectoredIOSupplier() {
     return vectoredIOSupplier;
   }
 
@@ -1927,5 +2000,11 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
       return String.format(
           "%s: %s", getAlgorithmName(), bytes == null ? null : BaseEncoding.base16().encode(bytes));
     }
+  }
+
+  private class GcsConnectorCapabilities {
+    public static final String OPEN_WITH_STATUS = "fs.gs.capability.open.with.status";
+    public static final String GET_FILE_STATUS_WITH_HINT =
+        "fs.gs.capability.getfilestatus.with.hint";
   }
 }

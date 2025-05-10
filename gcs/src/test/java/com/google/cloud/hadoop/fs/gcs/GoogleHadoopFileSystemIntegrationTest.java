@@ -19,6 +19,7 @@ package com.google.cloud.hadoop.fs.gcs;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.ACTION_HTTP_DELETE_REQUEST;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.ACTION_HTTP_GET_REQUEST;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.ACTION_HTTP_PATCH_REQUEST;
+import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.ACTION_HTTP_POST_REQUEST;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.ACTION_HTTP_PUT_REQUEST;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.FILES_CREATED;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_COPY_FROM_LOCAL_FILE;
@@ -29,6 +30,8 @@ import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_EXISTS;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_GET_FILE_CHECKSUM;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_GET_FILE_STATUS;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_GLOB_STATUS;
+import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_HFLUSH;
+import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_HSYNC;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_LIST_LOCATED_STATUS;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_LIST_STATUS;
 import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.INVOCATION_LIST_STATUS_RESULT_SIZE;
@@ -46,6 +49,10 @@ import static com.google.cloud.hadoop.fs.gcs.GhfsStatistic.STREAM_WRITE_OPERATIO
 import static com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystemConfiguration.GCS_OUTPUT_STREAM_BUFFER_SIZE;
 import static com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystemConfiguration.GCS_PROJECT_ID;
 import static com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystemTestHelper.createInMemoryGoogleHadoopFileSystem;
+import static com.google.cloud.hadoop.gcsio.GoogleCloudStorageStatistics.GCS_GET_MEDIA_REQUEST;
+import static com.google.cloud.hadoop.gcsio.GoogleCloudStorageStatistics.GCS_LIST_DIR_REQUEST;
+import static com.google.cloud.hadoop.gcsio.GoogleCloudStorageStatistics.GCS_LIST_FILE_REQUEST;
+import static com.google.cloud.hadoop.gcsio.GoogleCloudStorageStatistics.GCS_METADATA_REQUEST;
 import static com.google.cloud.hadoop.gcsio.testing.InMemoryGoogleCloudStorage.getInMemoryGoogleCloudStorageOptions;
 import static com.google.common.base.StandardSystemProperty.USER_NAME;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -55,6 +62,7 @@ import static java.lang.Math.toIntExact;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Arrays.stream;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_CREDENTIAL_PROVIDER_PATH;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 
 import com.google.api.client.http.HttpResponseException;
@@ -63,13 +71,26 @@ import com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem.GlobAlgorithm;
 import com.google.cloud.hadoop.fs.gcs.auth.AbstractDelegationTokenBinding;
 import com.google.cloud.hadoop.fs.gcs.auth.TestDelegationTokenBindingImpl;
 import com.google.cloud.hadoop.gcsio.*;
+import com.google.cloud.hadoop.gcsio.CreateBucketOptions;
+import com.google.cloud.hadoop.gcsio.FolderInfo;
+import com.google.cloud.hadoop.gcsio.GoogleCloudStorage;
+import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystem;
+import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystemIntegrationHelper;
+import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystemOptions;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystemOptions.ClientType;
+import com.google.cloud.hadoop.gcsio.GoogleCloudStorageOptions;
+import com.google.cloud.hadoop.gcsio.ListFolderOptions;
+import com.google.cloud.hadoop.gcsio.MethodOutcome;
+import com.google.cloud.hadoop.gcsio.StorageResourceId;
 import com.google.cloud.hadoop.gcsio.testing.InMemoryGoogleCloudStorage;
 import com.google.cloud.hadoop.util.AccessTokenProvider;
 import com.google.cloud.hadoop.util.ApiErrorExtractor;
+import com.google.cloud.hadoop.util.GoogleCloudStorageEventBus;
 import com.google.cloud.hadoop.util.HadoopCredentialsConfiguration.AuthenticationType;
 import com.google.cloud.hadoop.util.testing.TestingAccessTokenProvider;
+import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.hash.Hashing;
 import com.google.common.primitives.Ints;
 import java.io.File;
@@ -80,17 +101,19 @@ import java.net.URISyntaxException;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileChecksum;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.StorageStatistics;
+import org.apache.hadoop.fs.*;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.statistics.IOStatistics;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -104,6 +127,11 @@ import org.junit.Test;
 public abstract class GoogleHadoopFileSystemIntegrationTest extends GoogleHadoopFileSystemTestBase {
 
   private static final String PUBLIC_BUCKET = "gs://gcp-public-data-landsat";
+
+  private static HashSet<String> EXPECTED_DURATION_METRICS = getExpectedDurationMetrics();
+
+  private static final String GCS_API_COUNT = "gcsApiCount";
+  private static final String HADOOP_API_COUNT = "hadoopApiCount";
 
   @Before
   public void before() throws Exception {
@@ -170,6 +198,43 @@ public abstract class GoogleHadoopFileSystemIntegrationTest extends GoogleHadoop
     GoogleCloudStorage theGcs = googleHadoopFileSystem.getGcsFs().getGcs();
     theGcs.createBucket(
         bucketName, CreateBucketOptions.builder().setHierarchicalNamespaceEnabled(true).build());
+
+    try {
+      GoogleCloudStorageFileSystemIntegrationHelper helper =
+          new HadoopFileSystemIntegrationHelper(googleHadoopFileSystem);
+
+      renameHelper(
+          new HdfsBehavior() {
+            /**
+             * Returns the MethodOutcome of trying to rename an existing file into the root
+             * directory.
+             */
+            @Override
+            public MethodOutcome renameFileIntoRootOutcome() {
+              return new MethodOutcome(MethodOutcome.Type.RETURNS_TRUE);
+            }
+          },
+          bucketName,
+          bucketName,
+          helper);
+    } finally {
+      googleHadoopFileSystem.delete(new Path(initUri));
+    }
+  }
+
+  @Ignore
+  @Test
+  public void testRenameWithMoveOperation() throws Exception {
+    String bucketName = this.gcsiHelper.getUniqueBucketName("move");
+    GoogleHadoopFileSystem googleHadoopFileSystem = new GoogleHadoopFileSystem();
+
+    URI initUri = new URI("gs://" + bucketName);
+    Configuration config = loadConfig();
+    config.setBoolean("fs.gs.operation.move.enable", true);
+    googleHadoopFileSystem.initialize(initUri, config);
+
+    GoogleCloudStorage theGcs = googleHadoopFileSystem.getGcsFs().getGcs();
+    theGcs.createBucket(bucketName);
 
     try {
       GoogleCloudStorageFileSystemIntegrationHelper helper =
@@ -2301,6 +2366,653 @@ public abstract class GoogleHadoopFileSystemIntegrationTest extends GoogleHadoop
     assertThat(ghfs.exists(dest)).isTrue();
   }
 
+  @Test
+  public void testHnBucketNonRecursiveDeleteOperation() throws Exception {
+    String bucketName = this.gcsiHelper.getUniqueBucketName("hn");
+    GoogleHadoopFileSystem googleHadoopFileSystem = createHnEnabledBucket(bucketName);
+    String bucketPath = "gs://" + bucketName;
+    try {
+      googleHadoopFileSystem.mkdirs(new Path("/A/"));
+      assertThrows(
+          "Cannot delete a non-empty directory",
+          java.nio.file.DirectoryNotEmptyException.class,
+          () -> googleHadoopFileSystem.delete(new Path(bucketPath), false));
+
+      // verify only "A/" folder exists
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/A/")).isEqualTo(1);
+
+      // delete A/ non recursively
+      googleHadoopFileSystem.delete(new Path(bucketPath + "/A"), false);
+
+      // check that on listing we get no folders for folder "A/"
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/A/")).isEqualTo(0);
+    } finally {
+      googleHadoopFileSystem.delete(new Path(bucketPath));
+    }
+  }
+
+  @Test
+  public void testHnBucketRecursiveDeleteOperationOnBucket() throws Exception {
+    String bucketName = this.gcsiHelper.getUniqueBucketName("hn");
+    String bucketPath = "gs://" + bucketName;
+    GoogleHadoopFileSystem googleHadoopFileSystem = createHnEnabledBucket(bucketName);
+    createResources(googleHadoopFileSystem);
+    assertThat(getSubFolderCount(googleHadoopFileSystem, "gs://" + bucketName + "/")).isEqualTo(22);
+    assertThrows(
+        "Cannot delete a non-empty directory",
+        java.nio.file.DirectoryNotEmptyException.class,
+        () -> googleHadoopFileSystem.delete(new Path(bucketPath), false));
+
+    // delete bucket
+    googleHadoopFileSystem.delete(new Path(bucketPath), true);
+    assertThat(
+            googleHadoopFileSystem
+                .getGcsFs()
+                .getGcs()
+                .getItemInfo(new StorageResourceId(bucketName))
+                .exists())
+        .isFalse();
+
+    assertThrows(
+        "The specified bucket does not exist : " + bucketPath,
+        com.google.api.gax.rpc.NotFoundException.class,
+        () -> assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath)).isEqualTo(0));
+  }
+
+  @Test
+  public void testHnBucketRecursiveDeleteOperationOnDirectory() throws Exception {
+    String bucketName = this.gcsiHelper.getUniqueBucketName("hn");
+    String bucketPath = "gs://" + bucketName;
+    GoogleHadoopFileSystem googleHadoopFileSystem = createHnEnabledBucket(bucketName);
+    try {
+      createResources(googleHadoopFileSystem);
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/A/")).isEqualTo(21);
+      assertThrows(
+          "Cannot delete a non-empty directory",
+          java.nio.file.DirectoryNotEmptyException.class,
+          () -> googleHadoopFileSystem.delete(new Path(bucketPath + "/A"), false));
+
+      // rename A/ to B/
+      googleHadoopFileSystem.rename(new Path(bucketPath + "/A/"), new Path(bucketPath + "/B/"));
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/B/")).isEqualTo(21);
+
+      // delete B/
+      googleHadoopFileSystem.delete(new Path("/B"), true);
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/B/")).isEqualTo(0);
+
+      // rename C/ to B/
+      googleHadoopFileSystem.rename(new Path(bucketPath + "/C/"), new Path(bucketPath + "/B/"));
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/B/")).isEqualTo(1);
+    } finally {
+      googleHadoopFileSystem.delete(new Path(bucketPath));
+    }
+  }
+
+  @Test
+  public void testHnBucketDeleteOperationOnNonExistingFolder() throws Exception {
+    String bucketName = this.gcsiHelper.getUniqueBucketName("hn");
+    String bucketPath = "gs://" + bucketName;
+    GoogleHadoopFileSystem googleHadoopFileSystem = createHnEnabledBucket(bucketName);
+
+    try {
+      googleHadoopFileSystem.mkdirs(new Path("/A/"));
+      googleHadoopFileSystem.mkdirs(new Path("/A/C/"));
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/A/")).isEqualTo(2);
+
+      assertThrows(
+          "Cannot delete a non-empty directory",
+          java.nio.file.DirectoryNotEmptyException.class,
+          () -> googleHadoopFileSystem.delete(new Path(bucketPath + "/A"), false));
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/A/")).isEqualTo(2);
+
+      // try to delete a non existing folder
+      List<FolderInfo> folderInfoList = new ArrayList<>();
+      folderInfoList.add(new FolderInfo(FolderInfo.createFolderInfoObject(bucketName, "A/")));
+      folderInfoList.add(new FolderInfo(FolderInfo.createFolderInfoObject(bucketName, "A/B/")));
+      assertThrows(
+          "The folder you tried to delete is not empty.",
+          java.io.IOException.class,
+          () -> googleHadoopFileSystem.getGcsFs().getGcs().deleteFolders(folderInfoList));
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/A/")).isEqualTo(2);
+
+      // delete A/
+      googleHadoopFileSystem.delete(new Path("/A"), true);
+      assertThat(getSubFolderCount(googleHadoopFileSystem, bucketPath + "/A/")).isEqualTo(0);
+    } finally {
+      googleHadoopFileSystem.delete(new Path(bucketPath));
+    }
+  }
+
+  @Test
+  public void testGcsJsonAPIMetrics() throws IOException {
+    Configuration config = loadConfig(storageClientType);
+    config.setBoolean(
+        "fs.gs.status.parallel.enable", false); // to make the test results predictable
+    config.setBoolean("fs.gs.implicit.dir.repair.enable", false);
+
+    Path parentPath = ghfsHelper.castAsHadoopPath(getTempFilePath());
+    Path subdirPath = new Path(parentPath, "foo-subdir");
+    GoogleHadoopFileSystem myghfs = new GoogleHadoopFileSystem();
+    myghfs.initialize(subdirPath.toUri(), config);
+
+    GhfsGlobalStorageStatistics stats = myghfs.getGlobalGcsStorageStatistics();
+    stats.reset();
+
+    Stopwatch stopwatch = Stopwatch.createStarted();
+    myghfs.mkdirs(subdirPath);
+    stopwatch.stop();
+
+    Map<String, Long> expected =
+        ImmutableMap.<String, Long>builder()
+            // create object using directUpload
+            .put(GhfsStatistic.ACTION_HTTP_POST_REQUEST.getSymbol(), 1L)
+            .put(GhfsStatistic.DIRECTORIES_CREATED.getSymbol(), 1L)
+            // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_CLIENT_NOT_FOUND_RESPONSE_COUNT.getSymbol(),
+                3L)
+            // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(GoogleCloudStorageStatistics.GCS_API_CLIENT_SIDE_ERROR_COUNT.getSymbol(), 3L)
+            // 3 metadata + 1 POST
+            .put(GoogleCloudStorageStatistics.GCS_API_REQUEST_COUNT.getSymbol(), 4L)
+            // Check for each parent dirs
+            .put(GoogleCloudStorageStatistics.GCS_METADATA_REQUEST.getSymbol(), 3L)
+            .put(GhfsStatistic.INVOCATION_MKDIRS.getSymbol(), 1L)
+            .build();
+
+    verifyMetrics(stats, expected, stopwatch.elapsed().toMillis());
+
+    stats.reset();
+    stopwatch = Stopwatch.createStarted();
+    Path fileToCreate = new Path(subdirPath, "foo.txt");
+    int expectedLength = ThreadLocalRandom.current().nextInt(1, 10 * 1024 * 1024);
+    try (FSDataOutputStream outStream = myghfs.create(fileToCreate)) {
+      byte[] toWrite = new byte[expectedLength];
+      ThreadLocalRandom.current().nextBytes(toWrite);
+      outStream.write(toWrite);
+    }
+
+    expected =
+        ImmutableMap.<String, Long>builder()
+            // create resumable upload
+            .put(GhfsStatistic.ACTION_HTTP_POST_REQUEST.getSymbol(), 1L) // create resumable upload
+            .put(GhfsStatistic.ACTION_HTTP_PUT_REQUEST.getSymbol(), 1L) // complete resumable upload
+            .put(GhfsStatistic.FILES_CREATED.getSymbol(), 1L)
+            // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_CLIENT_NOT_FOUND_RESPONSE_COUNT.getSymbol(),
+                4L)
+            // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(GoogleCloudStorageStatistics.GCS_API_CLIENT_SIDE_ERROR_COUNT.getSymbol(), 4L)
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_REQUEST_COUNT.getSymbol(),
+                7L) // 4 metadata + 1 POST + 1 PUT + 1 LIST_FILE
+            // check if director with filename exists
+            .put(GoogleCloudStorageStatistics.GCS_LIST_FILE_REQUEST.getSymbol(), 1L)
+            .put(
+                GoogleCloudStorageStatistics.GCS_METADATA_REQUEST.getSymbol(),
+                4L) // Check for each parent dirs
+            .put(GhfsStatistic.INVOCATION_CREATE.getSymbol(), 1L)
+            .put(GhfsStatistic.STREAM_WRITE_BYTES.getSymbol(), (long) expectedLength)
+            .put(GhfsStatistic.STREAM_WRITE_OPERATIONS.getSymbol(), 1L)
+            .put(GhfsStatistic.STREAM_WRITE_CLOSE_OPERATIONS.getSymbol(), 1L)
+            .build();
+
+    verifyMetrics(stats, expected, stopwatch.elapsed().toMillis());
+
+    stats.reset();
+    stopwatch = Stopwatch.createStarted();
+
+    FileStatus fileStatus = myghfs.getFileStatus(fileToCreate);
+
+    assertThat(fileStatus.getLen()).isEqualTo(expectedLength);
+
+    expected =
+        ImmutableMap.<String, Long>builder()
+            .put(GoogleCloudStorageStatistics.GCS_API_REQUEST_COUNT.getSymbol(), 1L) // 1 metadata
+            .put(GhfsStatistic.INVOCATION_GET_FILE_STATUS.getSymbol(), 1L) //
+            .put(
+                GoogleCloudStorageStatistics.GCS_METADATA_REQUEST.getSymbol(),
+                1L) // GET for file metadata
+            .build();
+
+    verifyMetrics(stats, expected, stopwatch.elapsed().toMillis());
+
+    stats.reset();
+    stopwatch = Stopwatch.createStarted();
+    try (FSDataInputStream inStream = myghfs.open(fileToCreate)) {
+      byte[] inBuffer = new byte[expectedLength];
+      int bytesRead = inStream.read(inBuffer);
+
+      assertThat(bytesRead).isEqualTo(expectedLength);
+    }
+
+    expected =
+        ImmutableMap.<String, Long>builder()
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_REQUEST_COUNT.getSymbol(),
+                2L) // 1 metadata; 1 media
+            .put(GoogleCloudStorageStatistics.GCS_GET_MEDIA_REQUEST.getSymbol(), 1L)
+            .put(GoogleCloudStorageStatistics.GCS_METADATA_REQUEST.getSymbol(), 1L)
+            .put(GhfsStatistic.STREAM_READ_BYTES.getSymbol(), (long) expectedLength)
+            .put(GhfsStatistic.STREAM_READ_OPERATIONS.getSymbol(), 1L)
+            .put(GhfsStatistic.STREAM_READ_CLOSE_OPERATIONS.getSymbol(), 1L)
+            .put(GhfsStatistic.INVOCATION_OPEN.getSymbol(), 1L)
+            .build();
+
+    verifyMetrics(stats, expected, stopwatch.elapsed().toMillis());
+
+    Path renamedirPath = new Path(parentPath, "foo-subdir-rename");
+
+    stats.reset();
+    stopwatch = Stopwatch.createStarted();
+
+    myghfs.rename(subdirPath, renamedirPath);
+
+    expected =
+        ImmutableMap.<String, Long>builder()
+            .put(
+                GhfsStatistic.ACTION_HTTP_DELETE_REQUEST.getSymbol(),
+                2L) // 1 for file; 1 for directory.
+            .put(GhfsStatistic.ACTION_HTTP_POST_REQUEST.getSymbol(), 1L) // copy file;
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_CLIENT_NOT_FOUND_RESPONSE_COUNT.getSymbol(),
+                2L) // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_CLIENT_SIDE_ERROR_COUNT.getSymbol(),
+                2L) // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_REQUEST_COUNT.getSymbol(),
+                9L) // 2 delete + 3 metadata + 2 POST + 1 listDir + 3 listFile
+            .put(
+                GoogleCloudStorageStatistics.GCS_LIST_DIR_REQUEST.getSymbol(),
+                1L) // list src files to copy/delete
+            // One for src and dst. One due Auto repair checking grandparent.
+            .put(GoogleCloudStorageStatistics.GCS_LIST_FILE_REQUEST.getSymbol(), 3L)
+            .put(GoogleCloudStorageStatistics.GCS_METADATA_REQUEST.getSymbol(), 2L) // 1 dst; 1 src;
+            .put(GhfsStatistic.INVOCATION_RENAME.getSymbol(), 1L)
+            .build();
+
+    verifyMetrics(stats, expected, stopwatch.elapsed().toMillis());
+
+    stats.reset();
+    stopwatch = Stopwatch.createStarted();
+    myghfs.delete(renamedirPath, true);
+
+    expected =
+        ImmutableMap.<String, Long>builder()
+            .put(GhfsStatistic.ACTION_HTTP_DELETE_REQUEST.getSymbol(), 1L) // delete src file
+            .put(GhfsStatistic.FILES_DELETED.getSymbol(), 1L)
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_CLIENT_NOT_FOUND_RESPONSE_COUNT.getSymbol(),
+                1L) // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_CLIENT_SIDE_ERROR_COUNT.getSymbol(),
+                1L) // Check for each parent dirs fails due to NOT FOUND - expected
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_REQUEST_COUNT.getSymbol(),
+                4L) // 1 delete + 1 metadata + 1 listDir + 1 listFile
+            .put(
+                GoogleCloudStorageStatistics.GCS_LIST_DIR_REQUEST.getSymbol(),
+                1L) // to find src files to delete
+            .put(
+                GoogleCloudStorageStatistics.GCS_LIST_FILE_REQUEST.getSymbol(),
+                1L) // check if file exist for path
+            .put(
+                GoogleCloudStorageStatistics.GCS_METADATA_REQUEST.getSymbol(),
+                1L) // check if directory exists for path
+            .put(GhfsStatistic.INVOCATION_DELETE.getSymbol(), 1L)
+            .build();
+
+    verifyMetrics(stats, expected, stopwatch.elapsed().toMillis());
+  }
+
+  @Test
+  public void testGcsThreadLocalMetrics() throws IOException {
+    Configuration config = loadConfig(storageClientType);
+    config.setBoolean(
+        "fs.gs.status.parallel.enable", false); // to make the test results predictable
+    config.setBoolean("fs.gs.implicit.dir.repair.enable", false);
+    config.setBoolean("fs.gs.create.items.conflict.check.enable", false);
+
+    Path parentPath = ghfsHelper.castAsHadoopPath(getTempFilePath());
+    Path subdirPath = new Path(parentPath, "foo-subdir");
+    GoogleHadoopFileSystem myghfs = new GoogleHadoopFileSystem();
+    myghfs.initialize(subdirPath.toUri(), config);
+
+    GhfsThreadLocalStatistics stats =
+        (GhfsThreadLocalStatistics)
+            GlobalStorageStatistics.INSTANCE.get(GhfsThreadLocalStatistics.NAME);
+
+    // TODO: Some of the GCS API related operations, which are run in a separate thread are not
+    // tracked.
+    // It will be fixed in a separate change
+    runTest(subdirPath, myghfs, stats);
+  }
+
+  @Test
+  public void multiThreadTest() throws IOException {
+    Configuration config = loadConfig(storageClientType);
+    config.setBoolean(
+        "fs.gs.status.parallel.enable", false); // to make the test results predictable
+    config.setBoolean("fs.gs.implicit.dir.repair.enable", false);
+    config.setBoolean("fs.gs.create.items.conflict.check.enable", false);
+
+    Path parentPath = ghfsHelper.castAsHadoopPath(getTempFilePath());
+
+    GhfsThreadLocalStatistics stats =
+        (GhfsThreadLocalStatistics)
+            GlobalStorageStatistics.INSTANCE.get(GhfsThreadLocalStatistics.NAME);
+
+    IntStream.range(0, 10)
+        .parallel()
+        .forEach(
+            i -> {
+              try {
+                Path subdirPath = new Path(parentPath, "foo-subdir" + i);
+                GoogleHadoopFileSystem myghfs = new GoogleHadoopFileSystem();
+                myghfs.initialize(subdirPath.toUri(), config);
+                runTest(subdirPath, myghfs, stats);
+              } catch (IOException e) {
+                throw new RuntimeException(e);
+              }
+            });
+  }
+
+  private static Map<String, Long> getThreadLocalMetrics(GhfsThreadLocalStatistics statistics) {
+    Map<String, Long> values = new HashMap<>();
+    statistics
+        .getLongStatistics()
+        .forEachRemaining(theStat -> values.put(theStat.getName(), theStat.getValue()));
+    return values;
+  }
+
+  private static void runTest(
+      Path subdirPath, GoogleHadoopFileSystem myghfs, GhfsThreadLocalStatistics stats)
+      throws IOException {
+    Map<String, Long> metrics = getThreadLocalMetrics(stats);
+    myghfs.mkdirs(subdirPath);
+
+    verify(metrics, 1L, stats);
+
+    myghfs.getFileStatus(subdirPath);
+    verify(metrics, 2L, stats);
+
+    Path testFilePath = subdirPath.suffix("/test.empty");
+    try (FSDataOutputStream outStream = myghfs.create(testFilePath)) {
+      verify(metrics, 1L, stats);
+
+      outStream.hflush();
+      verify(metrics, 1L, stats);
+
+      outStream.hsync();
+      verify(metrics, 3L, stats);
+    }
+
+    metrics.merge(GCS_API_COUNT, 1L, Long::sum);
+    verify(metrics, stats);
+
+    try (FSDataInputStream ignored = myghfs.open(testFilePath)) {
+      ignored.read();
+      verify(metrics, 1L, stats);
+    }
+
+    Path dst = subdirPath.suffix("/test.rename.empty");
+    myghfs.rename(testFilePath, dst);
+    // TODO: Operations done async in a separate thread are not tracked. This will be fixed in a
+    // separate change.
+    verify(metrics, 2L, stats);
+
+    myghfs.delete(dst);
+    verify(metrics, 2L, stats);
+
+    myghfs.delete(subdirPath, true);
+    verify(metrics, 4L, stats);
+  }
+
+  private static void verify(
+      Map<String, Long> metrics, long gcsApiCount, GhfsThreadLocalStatistics stats) {
+    metrics.merge(HADOOP_API_COUNT, 1L, Long::sum);
+    metrics.merge(GCS_API_COUNT, gcsApiCount, Long::sum);
+    verify(metrics, stats);
+  }
+
+  private static void verify(
+      Map<String, Long> expectedMetrics, GhfsThreadLocalStatistics statistics) {
+    expectedMetrics.forEach((key, value) -> checkTracked(key, value, statistics));
+    assertThat(getThreadLocalMetrics(statistics).size()).isEqualTo(expectedMetrics.size());
+  }
+
+  private static void checkTracked(
+      String metric, long expected, GhfsThreadLocalStatistics statistics) {
+    assertThat(statistics.isTracked(metric)).isTrue();
+
+    if (!metric.toLowerCase().contains("time")) {
+      // time metrics are not deterministic
+      assertThat(statistics.getLong(metric)).isEqualTo(expected);
+    } else if (!metric.toLowerCase().contains("time")) {
+      // back off is not deterministic
+      assertThat(statistics.getLong(metric)).isAtLeast(expected);
+    }
+  }
+
+  private void verifyMetrics(
+      GhfsGlobalStorageStatistics stats, Map<String, Long> expected, long elapsed) {
+    Map<String, List<String>> expectedSum =
+        ImmutableMap.<String, List<String>>builder()
+            .put(
+                GoogleCloudStorageStatistics.GCS_API_TIME.getSymbol(),
+                List.of(
+                    GhfsStatistic.ACTION_HTTP_POST_REQUEST.getSymbol(),
+                    GhfsStatistic.ACTION_HTTP_DELETE_REQUEST.getSymbol(),
+                    GhfsStatistic.ACTION_HTTP_PUT_REQUEST.getSymbol(),
+                    GoogleCloudStorageStatistics.GCS_METADATA_REQUEST.getSymbol(),
+                    GoogleCloudStorageStatistics.GCS_GET_MEDIA_REQUEST.getSymbol(),
+                    GoogleCloudStorageStatistics.GCS_LIST_FILE_REQUEST.getSymbol(),
+                    GoogleCloudStorageStatistics.GCS_LIST_DIR_REQUEST.getSymbol()))
+            .build();
+
+    for (Iterator<StorageStatistics.LongStatistic> it = stats.getLongStatistics(); it.hasNext(); ) {
+      StorageStatistics.LongStatistic stat = it.next();
+
+      String name = stat.getName();
+      Long value = stat.getValue();
+
+      if (expected.containsKey(name)) {
+        assertWithMessage(name).that(value).isEqualTo(expected.get(name));
+      } else if (expectedSum.containsKey(name)) {
+        long expectedValue = 0L;
+        int roundOff = 0;
+
+        for (String subMetric : expectedSum.get(name)) {
+          String meanKey = subMetric + "_mean";
+          Long metricCount = stats.getLong(subMetric);
+          expectedValue += stats.getLong(meanKey) * metricCount;
+          roundOff += metricCount;
+        }
+
+        assertWithMessage(name).that(value).isAtLeast(expectedValue);
+        assertWithMessage(name).that(value).isLessThan(expectedValue + roundOff + 1);
+      } else if (!toIgnore(name)) {
+        assertWithMessage(name).that(value).isEqualTo(0L);
+      }
+
+      if (name.endsWith("_min")) {
+        verifyDurationMetricValues(name, stats);
+      }
+    }
+
+    assertThat(stats.getLong(GhfsStatistic.GCS_CONNECTOR_TIME.getSymbol())).isLessThan(elapsed + 1);
+  }
+
+  private void verifyDurationMetricValues(String minMetricName, GhfsGlobalStorageStatistics stats) {
+    if (minMetricName.equals("stream_write_operations_min")
+        || minMetricName.equals("stream_read_close_operations_min")) {
+      // For stream write operation, the actual writing can happen when the stream is closed and
+      // hence these could be zero
+      return;
+    }
+
+    String metricName = minMetricName.replace("_min", "");
+    long maxValue = stats.getLong(metricName + "_max");
+    long meanValue = stats.getLong(metricName + "_mean");
+    long minValue = stats.getLong(minMetricName);
+    long count = stats.getLong(metricName);
+
+    if (count != 0) {
+      assertWithMessage(metricName).that(maxValue).isGreaterThan(0);
+      assertWithMessage(metricName).that(minValue).isGreaterThan(0);
+      assertWithMessage(metricName).that(maxValue).isGreaterThan(minValue - 1);
+      assertWithMessage(metricName).that(meanValue).isGreaterThan(minValue - 1);
+      assertWithMessage(metricName).that(maxValue).isGreaterThan(meanValue - 1);
+
+      if (EXPECTED_DURATION_METRICS.contains(metricName)) {
+        long durationValue = stats.getLong(metricName + "_duration");
+        assertWithMessage(metricName).that(durationValue).isGreaterThan(0);
+        assertWithMessage(metricName).that(durationValue).isGreaterThan(meanValue * count - 1);
+        if (meanValue > 0.0) {
+          assertWithMessage(metricName).that(durationValue).isLessThan(meanValue * (count + 1));
+        }
+      }
+    }
+  }
+
+  private boolean toIgnore(String name) {
+    if ("gcs_connector_time".equals(name)
+        || "stream_write_operations_duration".equals(name)
+        || "stream_read_operations_duration".equals(name)
+        || name.contains("backoff")) {
+      return true;
+    }
+
+    return name.endsWith("_min")
+        || name.endsWith("_mean")
+        || name.endsWith("_max")
+        || name.endsWith("_duration");
+  }
+
+  @Test
+  public void durationMetrics() throws Exception {
+    Path parentPath = ghfsHelper.castAsHadoopPath(getTempFilePath());
+
+    GoogleHadoopFileSystem myghfs = new GoogleHadoopFileSystem();
+    myghfs.initialize(parentPath.toUri(), new Configuration());
+
+    GhfsGlobalStorageStatistics stats = myghfs.getGlobalGcsStorageStatistics();
+
+    Set<String> metrics = getDurationConnectorMetrics(stats);
+
+    assertEquals(EXPECTED_DURATION_METRICS, metrics);
+  }
+
+  private Set<String> getDurationConnectorMetrics(GhfsGlobalStorageStatistics stats) {
+    HashSet<String> metrics = new HashSet<>();
+    for (Iterator<StorageStatistics.LongStatistic> it = stats.getLongStatistics(); it.hasNext(); ) {
+      metrics.add(it.next().getName());
+    }
+
+    HashSet<String> result = new HashSet<>();
+    for (String metric : metrics) {
+      if (metric.endsWith("_mean")) {
+        String metricName = metric.substring(0, metric.length() - "_mean".length());
+        String durationMetricName = metricName + "_duration";
+
+        if (metrics.contains(durationMetricName)) {
+          result.add(metricName);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  private void createFile(GoogleHadoopFileSystem googleHadoopFileSystem, Path path)
+      throws Exception {
+    try (FSDataOutputStream fout = googleHadoopFileSystem.create(path)) {
+      fout.writeBytes("data");
+    }
+  }
+
+  private GoogleHadoopFileSystem createHnEnabledBucket(String bucketName) throws Exception {
+    GoogleHadoopFileSystem googleHadoopFileSystem = new GoogleHadoopFileSystem();
+    URI initUri = new URI("gs://" + bucketName);
+    Configuration config = loadConfig();
+    config.setBoolean("fs.gs.hierarchical.namespace.folders.enable", true);
+    googleHadoopFileSystem.initialize(initUri, config);
+    GoogleCloudStorage theGcs = googleHadoopFileSystem.getGcsFs().getGcs();
+    theGcs.createBucket(
+        bucketName, CreateBucketOptions.builder().setHierarchicalNamespaceEnabled(true).build());
+    assertThat(theGcs.isHnBucket(new Path(initUri + "/").toUri())).isTrue();
+    return googleHadoopFileSystem;
+  }
+
+  /** Pathlocation should end with "/" prefix */
+  private Integer getSubFolderCount(
+      GoogleHadoopFileSystem googleHadoopFileSystem, String pathLocation)
+      throws IOException, URISyntaxException {
+    List<FolderInfo> initialListOfFolders =
+        googleHadoopFileSystem
+            .getGcsFs()
+            .listFoldersInfoForPrefixPage(
+                new URI(pathLocation), ListFolderOptions.builder().build(), null)
+            .getItems();
+    return initialListOfFolders.size();
+  }
+
+  private void createResources(GoogleHadoopFileSystem googleHadoopFileSystem) throws Exception {
+    googleHadoopFileSystem.mkdirs(new Path("A/"));
+    googleHadoopFileSystem.mkdirs(new Path("A/dir1/"));
+    googleHadoopFileSystem.mkdirs(new Path("A/dir2/"));
+    for (int i = 0; i < 15; i++) {
+      Random r = new Random();
+      googleHadoopFileSystem.mkdirs(new Path("A/dir1/" + r.nextInt() + "/"));
+    }
+    googleHadoopFileSystem.mkdirs(new Path("A/dir1/subdir1/"));
+    googleHadoopFileSystem.mkdirs(new Path("A/dir1/subdir2/"));
+    googleHadoopFileSystem.mkdirs(new Path("A/dir2/subdir3/"));
+    createFile(googleHadoopFileSystem, new Path("A/1"));
+    createFile(googleHadoopFileSystem, new Path("A/2"));
+
+    googleHadoopFileSystem.mkdirs(new Path("C/"));
+    createFile(googleHadoopFileSystem, new Path("C/1"));
+    createFile(googleHadoopFileSystem, new Path("C/2"));
+    createFile(googleHadoopFileSystem, new Path("6"));
+  }
+
+  private void checkMetric(
+      String name, StorageStatistics statistics, HashSet<String> metricNames, String statsString) {
+    assertThat(metricNames.contains(name)).isTrue();
+    assertThat(statistics.isTracked(name)).isTrue();
+    assertThat(statsString.contains(name + "=")).isTrue();
+    assertEquals(0, statistics.getLong(name).longValue());
+  }
+
+  @Test
+  public void register_subscriber_multiple_time() throws Exception {
+    GoogleHadoopFileSystem myGhfs =
+        createInMemoryGoogleHadoopFileSystem(); // registers the subscriber class first time in
+    // myGhfs1
+    StorageStatistics stats = TestUtils.getStorageStatistics();
+
+    GoogleCloudStorageEventBus.register(
+        GoogleCloudStorageEventSubscriber.getInstance(
+            (GhfsGlobalStorageStatistics)
+                stats)); // registers the same subscriber class second time
+
+    assertThat(getMetricValue(stats, INVOCATION_CREATE)).isEqualTo(0);
+    assertThat(getMetricValue(stats, FILES_CREATED)).isEqualTo(0);
+
+    try (FSDataOutputStream fout = myGhfs.create(new Path("/file1"))) {
+      fout.writeBytes("Test Content");
+    }
+    assertThat(getMetricValue(stats, INVOCATION_CREATE)).isEqualTo(1);
+    assertThat(getMetricValue(stats, FILES_CREATED)).isEqualTo(1);
+    assertThat(myGhfs.delete(new Path("/file1"))).isTrue();
+
+    TestUtils.verifyDurationMetric(
+        (GhfsGlobalStorageStatistics) stats, INVOCATION_CREATE.getSymbol(), 1);
+  }
+
   private static Long getMetricValue(StorageStatistics stats, GhfsStatistic invocationCreate) {
     return stats.getLong(invocationCreate.getSymbol());
   }
@@ -2329,5 +3041,29 @@ public abstract class GoogleHadoopFileSystemIntegrationTest extends GoogleHadoop
         }
       } while (bytesRead >= 0);
     }
+  }
+
+  private static HashSet<String> getExpectedDurationMetrics() {
+    return new HashSet<String>(
+        List.of(
+            ACTION_HTTP_DELETE_REQUEST.getSymbol(),
+            ACTION_HTTP_POST_REQUEST.getSymbol(),
+            ACTION_HTTP_PUT_REQUEST.getSymbol(),
+            GCS_GET_MEDIA_REQUEST.getSymbol(),
+            GCS_LIST_DIR_REQUEST.getSymbol(),
+            GCS_LIST_FILE_REQUEST.getSymbol(),
+            GCS_METADATA_REQUEST.getSymbol(),
+            INVOCATION_CREATE.getSymbol(),
+            INVOCATION_DELETE.getSymbol(),
+            INVOCATION_GET_FILE_STATUS.getSymbol(),
+            INVOCATION_GLOB_STATUS.getSymbol(),
+            INVOCATION_HFLUSH.getSymbol(),
+            INVOCATION_HSYNC.getSymbol(),
+            INVOCATION_LIST_STATUS.getSymbol(),
+            INVOCATION_MKDIRS.getSymbol(),
+            INVOCATION_OPEN.getSymbol(),
+            INVOCATION_RENAME.getSymbol(),
+            STREAM_READ_OPERATIONS.getSymbol(),
+            STREAM_WRITE_OPERATIONS.getSymbol()));
   }
 }

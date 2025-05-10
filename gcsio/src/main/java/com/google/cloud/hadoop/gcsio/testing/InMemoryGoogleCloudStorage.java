@@ -23,6 +23,7 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import com.google.api.client.util.Clock;
 import com.google.cloud.hadoop.gcsio.CreateBucketOptions;
 import com.google.cloud.hadoop.gcsio.CreateObjectOptions;
+import com.google.cloud.hadoop.gcsio.FolderInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorage;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageExceptions;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageImpl;
@@ -30,6 +31,7 @@ import com.google.cloud.hadoop.gcsio.GoogleCloudStorageItemInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageOptions;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageReadOptions;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageStrings;
+import com.google.cloud.hadoop.gcsio.ListFolderOptions;
 import com.google.cloud.hadoop.gcsio.ListObjectOptions;
 import com.google.cloud.hadoop.gcsio.StorageResourceId;
 import com.google.cloud.hadoop.gcsio.UpdatableItemInfo;
@@ -320,6 +322,67 @@ public class InMemoryGoogleCloudStorage implements GoogleCloudStorage {
   }
 
   @Override
+  public void deleteFolders(List<FolderInfo> folders) throws IOException {
+    throw new IOException("Not implemented");
+  }
+
+  @Override
+  public synchronized void move(
+      Map<StorageResourceId, StorageResourceId> sourceToDestinationObjectsMap) throws IOException {
+    if (sourceToDestinationObjectsMap == null) {
+      throw new IllegalArgumentException("sourceToDestinationObjectsMap must not be null");
+    }
+
+    if (sourceToDestinationObjectsMap.isEmpty()) {
+      return;
+    }
+
+    // Gather exceptions
+    List<IOException> innerExceptions = new ArrayList<>();
+
+    for (Map.Entry<StorageResourceId, StorageResourceId> entry :
+        sourceToDestinationObjectsMap.entrySet()) {
+      StorageResourceId srcObject = entry.getKey();
+      StorageResourceId dstObject = entry.getValue();
+
+      if (!validateObjectName(srcObject.getObjectName())
+          || !validateObjectName(dstObject.getObjectName())) {
+        innerExceptions.add(
+            createFileNotFoundException(
+                srcObject.getBucketName(), srcObject.getObjectName(), /* cause= */ null));
+        continue;
+      }
+
+      try {
+        GoogleCloudStorageItemInfo srcInfo = getItemInfo(srcObject);
+        if (!srcInfo.exists()) {
+          // If the source is not found, add an error to the list and continue.
+          innerExceptions.add(
+              new IOException(String.format("Source object '%s' not found.", srcObject)));
+          continue;
+        }
+
+        // Simulate copy part of the move.
+        InMemoryBucketEntry srcBucketEntry = bucketLookup.get(srcObject.getBucketName());
+        InMemoryObjectEntry srcEntry = srcBucketEntry.get(srcObject.getObjectName());
+
+        bucketLookup
+            .get(dstObject.getBucketName())
+            .add(srcEntry.getShallowCopy(dstObject.getBucketName(), dstObject.getObjectName()));
+
+        // simulate delete
+        srcBucketEntry.remove(srcObject.getObjectName());
+      } catch (IOException e) {
+        innerExceptions.add(e);
+      }
+    }
+
+    if (!innerExceptions.isEmpty()) {
+      GoogleCloudStorageExceptions.createCompositeException(innerExceptions);
+    }
+  }
+
+  @Override
   public synchronized void copy(
       String srcBucketName,
       List<String> srcObjectNames,
@@ -403,6 +466,16 @@ public class InMemoryGoogleCloudStorage implements GoogleCloudStorage {
     // TODO: implement pagination
     return new ListPage<>(
         listObjectInfo(bucketName, objectNamePrefix, listOptions), /* nextPageToken= */ null);
+  }
+
+  @Override
+  public ListPage<FolderInfo> listFolderInfoForPrefixPage(
+      String bucketName,
+      String objectNamePrefix,
+      ListFolderOptions listFolderOptions,
+      String pageToken)
+      throws IOException {
+    throw new IOException("Not implemented");
   }
 
   @Override

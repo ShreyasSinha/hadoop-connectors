@@ -77,7 +77,6 @@ public class GoogleHadoopFileSystemConfigurationTest {
           put("fs.gs.grpc.read.message.timeout", 3_000L);
           put("fs.gs.grpc.read.timeout", 3_600_000L);
           put("fs.gs.grpc.read.zerocopy.enable", true);
-          put("fs.gs.grpc.server.address", "storage.googleapis.com");
           put("fs.gs.grpc.trafficdirector.enable", true);
           put("fs.gs.grpc.write.buffered.requests", 20);
           put("fs.gs.grpc.write.message.timeout", 3_000L);
@@ -128,6 +127,8 @@ public class GoogleHadoopFileSystemConfigurationTest {
               "fs.gs.write.parallel.composite.upload.part.file.cleanup.type",
               PartFileCleanupType.ALWAYS);
           put("fs.gs.write.parallel.composite.upload.part.file.name.prefix", "");
+          put("fs.gs.operation.move.enable", false);
+          put("fs.gs.operation.bidi.enable", false);
         }
       };
 

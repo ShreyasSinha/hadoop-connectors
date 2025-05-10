@@ -401,11 +401,6 @@ public class GoogleHadoopFileSystemConfiguration {
           "fs.gs.grpc.checksums.enable",
           GoogleCloudStorageReadOptions.DEFAULT.isGrpcChecksumsEnabled());
 
-  /** Configuration key for the Cloud Storage gRPC server address. */
-  public static final HadoopConfigurationProperty<String> GCS_GRPC_SERVER_ADDRESS =
-      new HadoopConfigurationProperty<>(
-          "fs.gs.grpc.server.address", GoogleCloudStorageOptions.DEFAULT.getGrpcServerAddress());
-
   /** Configuration key for check interval for gRPC request timeout to GCS. */
   public static final HadoopConfigurationProperty<Long> GCS_GRPC_CHECK_INTERVAL_TIMEOUT =
       new HadoopConfigurationProperty<>(
@@ -561,6 +556,17 @@ public class GoogleHadoopFileSystemConfiguration {
           "fs.gs.write.parallel.composite.upload.part.file.name.prefix",
           AsyncWriteChannelOptions.DEFAULT.getPartFileNamePrefix());
 
+  /** Configuration key for enabling move operation in gcs instead of copy+delete. */
+  public static final HadoopConfigurationProperty<Boolean> GCS_OPERATION_MOVE_ENABLE =
+      new HadoopConfigurationProperty<>(
+          "fs.gs.operation.move.enable",
+          GoogleCloudStorageOptions.DEFAULT.isMoveOperationEnabled());
+
+  /** Configuration key for enabling bidi API for Rapid Storage in gcs. */
+  public static final HadoopConfigurationProperty<Boolean> GCS_OPERATION_BIDI_API_ENABLE =
+      new HadoopConfigurationProperty<>(
+          "fs.gs.operation.bidi.enable", GoogleCloudStorageOptions.DEFAULT.isBidiApiEnabled());
+
   static GoogleCloudStorageFileSystemOptions.Builder getGcsFsOptionsBuilder(Configuration config) {
     return GoogleCloudStorageFileSystemOptions.builder()
         .setBucketDeleteEnabled(GCE_BUCKET_DELETE_ENABLE.get(config, config::getBoolean))
@@ -598,7 +604,6 @@ public class GoogleHadoopFileSystemConfiguration {
         .setGrpcEnabled(GCS_GRPC_ENABLE.get(config, config::getBoolean))
         .setHnBucketRenameEnabled(GCS_HIERARCHICAL_NAMESPACE_ENABLE.get(config, config::getBoolean))
         .setGrpcMessageTimeoutCheckInterval(GCS_GRPC_CHECK_INTERVAL_TIMEOUT.getTimeDuration(config))
-        .setGrpcServerAddress(GCS_GRPC_SERVER_ADDRESS.get(config, config::get))
         .setHttpRequestConnectTimeout(GCS_HTTP_CONNECT_TIMEOUT.getTimeDuration(config))
         .setHttpRequestHeaders(GCS_HTTP_HEADERS.getPropsWithPrefix(config))
         .setHttpRequestReadTimeout(
@@ -624,7 +629,9 @@ public class GoogleHadoopFileSystemConfiguration {
         .setTraceLogEnabled(GCS_TRACE_LOG_ENABLE.get(config, config::getBoolean))
         .setOperationTraceLogEnabled(GCS_OPERATION_TRACE_LOG_ENABLE.get(config, config::getBoolean))
         .setTrafficDirectorEnabled(GCS_GRPC_TRAFFICDIRECTOR_ENABLE.get(config, config::getBoolean))
-        .setWriteChannelOptions(getWriteChannelOptions(config));
+        .setWriteChannelOptions(getWriteChannelOptions(config))
+        .setMoveOperationEnabled(GCS_OPERATION_MOVE_ENABLE.get(config, config::getBoolean))
+        .setBidiApiEnabled(GCS_OPERATION_BIDI_API_ENABLE.get(config, config::getBoolean));
   }
 
   @VisibleForTesting
