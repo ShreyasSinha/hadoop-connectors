@@ -67,6 +67,7 @@ import com.google.cloud.hadoop.util.RetryBoundedBackOff;
 import com.google.cloud.hadoop.util.RetryDeterminer;
 import com.google.cloud.hadoop.util.RetryHttpInitializer;
 import com.google.cloud.hadoop.util.TraceOperation;
+import com.google.cloud.storage.BlobId;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
 import com.google.common.cache.Cache;
@@ -85,6 +86,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.FileAlreadyExistsException;
@@ -108,8 +110,11 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 import java.util.stream.Collectors;
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import org.apache.hadoop.fs.FileRange;
 
 /**
  * Provides read/write access to Google Cloud Storage (GCS), using Java nio channel semantics. This
@@ -1796,6 +1801,15 @@ public class GoogleCloudStorageImpl implements GoogleCloudStorage {
     }
 
     return new ListPage<>(listedFolders, nextPageToken);
+  }
+
+  @Override
+  public void readVectored(
+      List<? extends FileRange> ranges,
+      IntFunction<ByteBuffer> allocate,
+      BlobId blobId)
+      throws IOException {
+    throw new UnsupportedOperationException("Not Implemented");
   }
 
   private ListFoldersRequest.Builder createFolderListRequest(

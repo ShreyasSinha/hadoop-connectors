@@ -7,20 +7,16 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.function.IntFunction;
 import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
 
 public interface VectoredIO extends Closeable {
+
   /**
-   * Reads data from Google Cloud Storage using vectored I/O operations.
-   *
-   * @param ranges List of file ranges to read.
-   * @param allocate Function to allocate ByteBuffer for reading.
-   * @throws IOException if an I/O error occurs.
-   */
-  /**
-   * Reads data from Google Cloud Storage using vectored I/O operations.
+   * Reads data from Storage using vectored I/O operations.
    *
    * @param ranges List of file ranges to read.
    * @param allocate Function to allocate ByteBuffer for reading.
@@ -30,11 +26,11 @@ public interface VectoredIO extends Closeable {
    * @param gcsPath URI of the gcs object for which the range requests are fired.
    * @throws IOException If invalid range is requested, offset<0.
    */
-  public void readVectored(
+  void readVectored(
       List<? extends FileRange> ranges,
       IntFunction<ByteBuffer> allocate,
       GoogleCloudStorageFileSystem gcsFs,
       FileInfo fileInfo,
       @Nonnull URI gcsPath)
-      throws IOException;
+      throws IOException, ExecutionException, InterruptedException, TimeoutException;
 }

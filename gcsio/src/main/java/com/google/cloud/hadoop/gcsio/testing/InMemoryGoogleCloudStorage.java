@@ -23,6 +23,7 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import com.google.api.client.util.Clock;
 import com.google.cloud.hadoop.gcsio.CreateBucketOptions;
 import com.google.cloud.hadoop.gcsio.CreateObjectOptions;
+import com.google.cloud.hadoop.gcsio.FileInfo;
 import com.google.cloud.hadoop.gcsio.FolderInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorage;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageExceptions;
@@ -35,6 +36,7 @@ import com.google.cloud.hadoop.gcsio.ListFolderOptions;
 import com.google.cloud.hadoop.gcsio.ListObjectOptions;
 import com.google.cloud.hadoop.gcsio.StorageResourceId;
 import com.google.cloud.hadoop.gcsio.UpdatableItemInfo;
+import com.google.cloud.storage.BlobId;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -49,7 +51,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.IntFunction;
 import java.util.stream.Collectors;
+import javax.annotation.Nonnull;
+import org.apache.hadoop.fs.FileRange;
 
 /**
  * InMemoryGoogleCloudStorage overrides the public methods of GoogleCloudStorage by implementing all
@@ -476,6 +481,15 @@ public class InMemoryGoogleCloudStorage implements GoogleCloudStorage {
       String pageToken)
       throws IOException {
     throw new IOException("Not implemented");
+  }
+
+  @Override
+  public void readVectored(
+      List<? extends FileRange> ranges,
+      IntFunction<ByteBuffer> allocate,
+      BlobId blobId)
+      throws IOException {
+    throw new UnsupportedOperationException("Not Implemented");
   }
 
   @Override

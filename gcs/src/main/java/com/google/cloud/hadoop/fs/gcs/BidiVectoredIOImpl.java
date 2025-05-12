@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.function.IntFunction;
 import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
@@ -24,7 +26,9 @@ public class BidiVectoredIOImpl implements VectoredIO {
       GoogleCloudStorageFileSystem gcsFs,
       FileInfo fileInfo,
       @Nonnull URI gcsPath)
-      throws IOException {}
+      throws IOException, ExecutionException, InterruptedException, TimeoutException {
+    gcsFs.getGcs().readVectored(ranges, allocate, fileInfo, gcsPath);
+  }
 
   @Override
   public void close() throws IOException {}
