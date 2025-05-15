@@ -112,7 +112,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import org.apache.hadoop.fs.FileRange;
 
@@ -1805,9 +1804,7 @@ public class GoogleCloudStorageImpl implements GoogleCloudStorage {
 
   @Override
   public void readVectored(
-      List<? extends FileRange> ranges,
-      IntFunction<ByteBuffer> allocate,
-      BlobId blobId)
+      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException {
     throw new UnsupportedOperationException("Not Implemented");
   }

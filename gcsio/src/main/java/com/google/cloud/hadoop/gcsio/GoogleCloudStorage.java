@@ -32,7 +32,6 @@ import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.function.IntFunction;
-import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
 
 /**
@@ -445,9 +444,7 @@ public interface GoogleCloudStorage {
    * @throws IOException on IO error
    */
   void readVectored(
-      List<? extends FileRange> ranges,
-      IntFunction<ByteBuffer> allocate,
-      BlobId blobId)
+      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException;
 
   /**

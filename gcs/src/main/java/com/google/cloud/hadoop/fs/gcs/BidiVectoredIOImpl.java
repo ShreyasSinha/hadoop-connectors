@@ -2,6 +2,8 @@ package com.google.cloud.hadoop.fs.gcs;
 
 import com.google.cloud.hadoop.gcsio.FileInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystem;
+import com.google.cloud.hadoop.gcsio.StorageResourceId;
+import com.google.cloud.storage.BlobId;
 import com.google.common.flogger.GoogleLogger;
 import java.io.IOException;
 import java.net.URI;
@@ -26,8 +28,18 @@ public class BidiVectoredIOImpl implements VectoredIO {
       GoogleCloudStorageFileSystem gcsFs,
       FileInfo fileInfo,
       @Nonnull URI gcsPath)
-      throws IOException, ExecutionException, InterruptedException, TimeoutException {
-    gcsFs.getGcs().readVectored(ranges, allocate, fileInfo, gcsPath);
+      throws IOException {
+    StorageResourceId resourceId =
+        StorageResourceId.fromUriPath(gcsPath, /* allowEmptyObjectName= */ false);
+    BlobId blobId =
+        BlobId.of(
+            resourceId.getBucketName(), resourceId.getObjectName(), resourceId.getGenerationId());
+    try {
+
+      gcsFs.getGcs().readVectored(ranges, allocate, blobId);
+    } catch (ExecutionException | InterruptedException | TimeoutException e) {
+      throw new IOException(e);
+    }
   }
 
   @Override
