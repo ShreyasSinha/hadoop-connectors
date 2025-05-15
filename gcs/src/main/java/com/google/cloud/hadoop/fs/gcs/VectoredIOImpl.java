@@ -19,7 +19,6 @@ package com.google.cloud.hadoop.fs.gcs;
 import static org.apache.hadoop.fs.VectoredReadUtils.isOrderedDisjoint;
 import static org.apache.hadoop.fs.VectoredReadUtils.mergeSortedRanges;
 import static org.apache.hadoop.fs.VectoredReadUtils.sliceTo;
-import static org.apache.hadoop.fs.VectoredReadUtils.validateRangeRequest;
 
 import com.google.cloud.hadoop.gcsio.FileInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystem;
@@ -97,7 +96,7 @@ public class VectoredIOImpl implements VectoredIO {
     List<? extends FileRange> sortedRanges = validateNonOverlappingAndReturnSortedRanges(ranges);
     for (FileRange range : ranges) {
       // TODO(user): upgrade to use validateAndSortRanges
-      validateRangeRequest(range);
+      // validateRangeRequest(range);
       CompletableFuture<ByteBuffer> result = new CompletableFuture<>();
       range.setData(result);
     }

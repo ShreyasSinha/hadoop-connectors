@@ -7,8 +7,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
 import java.util.function.IntFunction;
 import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
@@ -32,5 +30,5 @@ public interface VectoredIO extends Closeable {
       GoogleCloudStorageFileSystem gcsFs,
       FileInfo fileInfo,
       @Nonnull URI gcsPath)
-      throws IOException, ExecutionException, InterruptedException, TimeoutException;
+      throws IOException;
 }

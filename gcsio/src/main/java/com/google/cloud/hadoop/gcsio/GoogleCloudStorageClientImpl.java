@@ -87,11 +87,9 @@ import com.google.common.collect.Maps;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.io.BaseEncoding;
 import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.ClientInterceptor;
 import java.io.IOException;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -104,6 +102,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentHashMap.KeySetView;
 import java.util.concurrent.ExecutionException;
@@ -114,7 +113,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import org.apache.hadoop.fs.FileRange;
 
@@ -718,9 +716,7 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
 
   @Override
   public void readVectored(
-      List<? extends FileRange> ranges,
-      IntFunction<ByteBuffer> allocate,
-      BlobId blobId)
+      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
 
     try (BlobReadSession blobReadSession =
@@ -734,24 +730,41 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
                           blobReadSession.readAs(
                               ReadProjectionConfigs.asFutureBytes()
                                   .withRangeSpec(
-                                      RangeSpec.of(range.getOffset(), range.getOffset())))));
+                                      RangeSpec.of(range.getOffset(), range.getLength())))));
+
       futures.forEach(
           (range, future) -> {
-            future.addListener(
-                () -> {
-                  try {
-                    byte[] result = future.get(30, TimeUnit.SECONDS);
-                    ByteBuffer dst = allocate.apply(range.getLength());
-                    dst.put(result);
-                    range.getData().complete(dst);
-                  } catch (ExecutionException | InterruptedException | TimeoutException e) {
-                    throw new RuntimeException(e);
-                  }
-                },
-                MoreExecutors.directExecutor());
-            ByteBuffer dst = allocate.apply(range.getLength());
-            range.getData().complete(dst);
+            byte[] result = null;
+            try {
+              result = future.get(30, TimeUnit.SECONDS);
+              ByteBuffer dst = allocate.apply(result.length);
+              System.out.println("Result Length = " + result.length);
+              System.out.println("Remaining = " + dst.remaining());
+              dst.put(result);
+              dst.flip();
+              range.setData(new CompletableFuture<>());
+              range.getData().complete(dst);
+            } catch (ExecutionException | InterruptedException | TimeoutException e) {
+              throw new RuntimeException(e);
+            }
           });
+      //   futures.forEach(
+      //       (range, future) -> {
+      //         future.addListener(
+      //             () -> {
+      //               try {
+      //                 byte[] result = future.get(30, TimeUnit.SECONDS);
+      //                 ByteBuffer dst = allocate.apply(result.length);
+      //                 dst.put(result);
+      //                 dst.flip();
+      //                 range.setData(new CompletableFuture<>());
+      //                 range.getData().complete(dst);
+      //               } catch (ExecutionException | InterruptedException | TimeoutException e) {
+      //                 throw new RuntimeException(e);
+      //               }
+      //             },
+      //             MoreExecutors.directExecutor());
+      //       });
     }
   }
 

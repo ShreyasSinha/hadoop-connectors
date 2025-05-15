@@ -30,7 +30,6 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.function.IntFunction;
-import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
 
 /** A class that wraps a {@link GoogleCloudStorage} object, delegating all calls to it. */
@@ -221,9 +220,7 @@ public class ForwardingGoogleCloudStorage implements GoogleCloudStorage {
 
   @Override
   public void readVectored(
-      List<? extends FileRange> ranges,
-      IntFunction<ByteBuffer> allocate,
-      BlobId blobId)
+      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
     delegate.readVectored(ranges, allocate, blobId);
   }
