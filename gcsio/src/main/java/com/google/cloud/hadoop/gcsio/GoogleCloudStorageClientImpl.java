@@ -91,7 +91,6 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.ClientInterceptor;
 import java.io.IOException;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -114,7 +113,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import org.apache.hadoop.fs.FileRange;
 
@@ -718,9 +716,7 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
 
   @Override
   public void readVectored(
-      List<? extends FileRange> ranges,
-      IntFunction<ByteBuffer> allocate,
-      BlobId blobId)
+      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
 
     try (BlobReadSession blobReadSession =

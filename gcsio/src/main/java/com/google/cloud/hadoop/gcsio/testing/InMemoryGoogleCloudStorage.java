@@ -23,7 +23,6 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import com.google.api.client.util.Clock;
 import com.google.cloud.hadoop.gcsio.CreateBucketOptions;
 import com.google.cloud.hadoop.gcsio.CreateObjectOptions;
-import com.google.cloud.hadoop.gcsio.FileInfo;
 import com.google.cloud.hadoop.gcsio.FolderInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorage;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageExceptions;
@@ -53,7 +52,6 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
 
 /**
@@ -485,9 +483,7 @@ public class InMemoryGoogleCloudStorage implements GoogleCloudStorage {
 
   @Override
   public void readVectored(
-      List<? extends FileRange> ranges,
-      IntFunction<ByteBuffer> allocate,
-      BlobId blobId)
+      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException {
     throw new UnsupportedOperationException("Not Implemented");
   }
