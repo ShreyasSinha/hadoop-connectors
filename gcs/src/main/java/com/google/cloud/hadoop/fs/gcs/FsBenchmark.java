@@ -30,6 +30,7 @@ import com.google.common.flogger.GoogleLogger;
 import com.google.common.util.concurrent.Futures;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -40,6 +41,7 @@ import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -48,10 +50,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.IntFunction;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileRange;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileSystem.Statistics;
@@ -161,8 +167,101 @@ public class FsBenchmark extends Configured implements Tool {
         return benchmarkRead(fs, cmdArgs);
       case "random-read":
         return benchmarkRandomRead(fs, cmdArgs);
+      case "vectored-read":
+        return benchmarkVectoredRead(fs, cmdArgs);
     }
     throw new IllegalArgumentException("Unknown command: " + cmd);
+  }
+
+  private int benchmarkVectoredRead(FileSystem fs, Map<String, String> args) {
+    if (args.size() < 1) {
+      System.err.println("Usage: VectoredRead" + " --file=gs://${BUCKET}/path/to/test/dir/");
+      return 1;
+    }
+
+    Path testFile = new Path(args.get("--file"));
+
+    try {
+      benchmarkVectoredRead(fs, testFile);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+
+    return 0;
+  }
+
+  private void benchmarkVectoredRead(FileSystem fs, Path testFile) throws IOException {
+    try (FSDataInputStream input = fs.open(testFile)) {
+      // 1. Define the file ranges to read
+      List<FileRange> ranges = new ArrayList<>();
+
+      // Example: Read 100 bytes from offset 0
+      ranges.add(new CustomFileRange(0, 100));
+      // Example: Read 200 bytes from offset 500
+      ranges.add(new CustomFileRange(500, 200));
+      // Example: Read 150 bytes from offset 1000
+      ranges.add(new CustomFileRange(1000, 150));
+
+      // 2. Define the allocator function for ByteBuffers
+      // This function will be called to allocate a ByteBuffer for each range's data.
+      // You can choose between direct buffers (for better performance with some I/O systems)
+      // or heap buffers.
+      IntFunction<ByteBuffer> allocator = (length) -> ByteBuffer.allocateDirect(length);
+      // IntFunction<ByteBuffer> allocator = (length) -> ByteBuffer.allocate(length); // for heap
+      // buffers
+
+      input.readVectored(ranges, allocator);
+
+      ranges.forEach(
+          range -> {
+            try {
+              System.out.println(range.getData().get(30, TimeUnit.SECONDS).toString());
+            } catch (InterruptedException e) {
+              throw new RuntimeException(e);
+            } catch (ExecutionException e) {
+              throw new RuntimeException(e);
+            } catch (TimeoutException e) {
+              throw new RuntimeException(e);
+            }
+          });
+    }
+  }
+
+  class CustomFileRange implements FileRange {
+    int offset;
+    int length;
+
+    CompletableFuture<ByteBuffer> data;
+
+    CustomFileRange(int offset, int length) {
+      this.offset = offset;
+      this.length = length;
+    }
+
+    @Override
+    public long getOffset() {
+      return offset;
+    }
+
+    @Override
+    public int getLength() {
+      return length;
+    }
+
+    @Override
+    public CompletableFuture<ByteBuffer> getData() {
+      return data;
+    }
+
+    @Override
+    public void setData(CompletableFuture<ByteBuffer> completableFuture) {
+      data = completableFuture;
+    }
+
+    @Override
+    public Object getReference() {
+      return null;
+    }
   }
 
   private int benchmarkWrite(FileSystem fs, Map<String, String> args) {
