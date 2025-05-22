@@ -86,7 +86,7 @@ class GoogleHadoopFSInputStream extends FSInputStream implements IOStatisticsSou
 
   // Statistic tracker of the Input stream
   private final GhfsInputStreamStatistics streamStatistics;
-  private final Supplier<VectoredIOImpl> vectoredIOSupplier;
+  private final Supplier<VectoredIO> vectoredIOSupplier;
   private final GoogleCloudStorageFileSystem gcsFs;
 
   static GoogleHadoopFSInputStream create(

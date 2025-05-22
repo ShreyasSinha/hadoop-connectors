@@ -33,6 +33,7 @@ import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.util.BackOff;
 import com.google.api.client.util.ExponentialBackOff;
+import com.google.api.core.ApiFuture;
 import com.google.api.gax.paging.Page;
 import com.google.auth.Credentials;
 import com.google.auth.oauth2.AccessToken;
@@ -48,6 +49,7 @@ import com.google.cloud.hadoop.util.GrpcErrorTypeExtractor;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.BlobReadSession;
 import com.google.cloud.storage.BlobWriteSessionConfig;
 import com.google.cloud.storage.BlobWriteSessionConfigs;
 import com.google.cloud.storage.Bucket;
@@ -59,6 +61,8 @@ import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.Bu
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.ExecutorSupplier;
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.PartCleanupStrategy;
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.PartNamingStrategy;
+import com.google.cloud.storage.RangeSpec;
+import com.google.cloud.storage.ReadProjectionConfigs;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobField;
 import com.google.cloud.storage.Storage.BlobGetOption;
@@ -86,6 +90,7 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.ClientInterceptor;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.FileAlreadyExistsException;
@@ -97,13 +102,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentHashMap.KeySetView;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
+import org.apache.hadoop.fs.FileRange;
 
 /**
  * Provides read/write access to Google Cloud Storage (GCS), using Java nio channel semantics. This
@@ -701,6 +712,60 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
       bucketInfos.add(createItemInfoForBucket(new StorageResourceId(bucket.getName()), bucket));
     }
     return bucketInfos;
+  }
+
+  @Override
+  public void readVectored(
+      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
+      throws IOException, ExecutionException, InterruptedException, TimeoutException {
+
+    try (BlobReadSession blobReadSession =
+        storage.blobReadSession(blobId).get(30, TimeUnit.SECONDS)) {
+      Map<? extends FileRange, ApiFuture<byte[]>> futures =
+          ranges.stream()
+              .collect(
+                  Collectors.toMap(
+                      Function.identity(),
+                      range ->
+                          blobReadSession.readAs(
+                              ReadProjectionConfigs.asFutureBytes()
+                                  .withRangeSpec(
+                                      RangeSpec.of(range.getOffset(), range.getLength())))));
+
+      futures.forEach(
+          (range, future) -> {
+            byte[] result = null;
+            try {
+              result = future.get(30, TimeUnit.SECONDS);
+              ByteBuffer dst = allocate.apply(result.length);
+              System.out.println("Result Length = " + result.length);
+              System.out.println("Remaining = " + dst.remaining());
+              dst.put(result);
+              dst.flip();
+              range.setData(new CompletableFuture<>());
+              range.getData().complete(dst);
+            } catch (ExecutionException | InterruptedException | TimeoutException e) {
+              throw new RuntimeException(e);
+            }
+          });
+      //   futures.forEach(
+      //       (range, future) -> {
+      //         future.addListener(
+      //             () -> {
+      //               try {
+      //                 byte[] result = future.get(30, TimeUnit.SECONDS);
+      //                 ByteBuffer dst = allocate.apply(result.length);
+      //                 dst.put(result);
+      //                 dst.flip();
+      //                 range.setData(new CompletableFuture<>());
+      //                 range.getData().complete(dst);
+      //               } catch (ExecutionException | InterruptedException | TimeoutException e) {
+      //                 throw new RuntimeException(e);
+      //               }
+      //             },
+      //             MoreExecutors.directExecutor());
+      //       });
+    }
   }
 
   /** Creates a builder for a blob move request. */

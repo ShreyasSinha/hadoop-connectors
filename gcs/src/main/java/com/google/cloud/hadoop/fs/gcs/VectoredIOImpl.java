@@ -19,7 +19,6 @@ package com.google.cloud.hadoop.fs.gcs;
 import static org.apache.hadoop.fs.VectoredReadUtils.isOrderedDisjoint;
 import static org.apache.hadoop.fs.VectoredReadUtils.mergeSortedRanges;
 import static org.apache.hadoop.fs.VectoredReadUtils.sliceTo;
-import static org.apache.hadoop.fs.VectoredReadUtils.validateRangeRequest;
 
 import com.google.cloud.hadoop.gcsio.FileInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystem;
@@ -27,7 +26,6 @@ import com.google.cloud.hadoop.gcsio.GoogleCloudStorageReadOptions;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import java.io.Closeable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.URI;
@@ -49,7 +47,7 @@ import org.apache.hadoop.fs.VectoredReadUtils;
 import org.apache.hadoop.fs.impl.CombinedFileRange;
 
 @VisibleForTesting
-public class VectoredIOImpl implements Closeable {
+public class VectoredIOImpl implements VectoredIO {
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
   private final BlockingQueue taskQueue = new LinkedBlockingQueue<Runnable>();
   private final VectoredReadOptions vectoredReadOptions;
@@ -78,24 +76,7 @@ public class VectoredIOImpl implements Closeable {
     this.storageStatistics = storageStatistics;
   }
 
-  /**
-   * Reads data from Google Cloud Storage using vectored I/O operations.
-   *
-   * @param ranges List of file ranges to read.
-   * @param allocate Function to allocate ByteBuffer for reading.
-   * @throws IOException if an I/O error occurs.
-   */
-  /**
-   * Reads data from Google Cloud Storage using vectored I/O operations.
-   *
-   * @param ranges List of file ranges to read.
-   * @param allocate Function to allocate ByteBuffer for reading.
-   * @param gcsFs GCFS implementation to use while creating channel and reading content for ranges.
-   * @param fileInfo FileInfo of the gcs object agaisnt which range request are fired, this can be
-   *     null for some code path fall back to URI path provided.
-   * @param gcsPath URI of the gcs object for which the range requests are fired.
-   * @throws IOException If invalid range is requested, offset<0.
-   */
+  @Override
   public void readVectored(
       List<? extends FileRange> ranges,
       IntFunction<ByteBuffer> allocate,
@@ -115,7 +96,7 @@ public class VectoredIOImpl implements Closeable {
     List<? extends FileRange> sortedRanges = validateNonOverlappingAndReturnSortedRanges(ranges);
     for (FileRange range : ranges) {
       // TODO(user): upgrade to use validateAndSortRanges
-      validateRangeRequest(range);
+      // validateRangeRequest(range);
       CompletableFuture<ByteBuffer> result = new CompletableFuture<>();
       range.setData(result);
     }
