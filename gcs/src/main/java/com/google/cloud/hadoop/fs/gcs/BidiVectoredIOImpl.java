@@ -3,6 +3,7 @@ package com.google.cloud.hadoop.fs.gcs;
 import com.google.cloud.hadoop.gcsio.FileInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystem;
 import com.google.cloud.hadoop.gcsio.StorageResourceId;
+import com.google.cloud.hadoop.gcsio.VectoredIORange;
 import com.google.cloud.hadoop.gcsio.VectoredIOResult;
 import com.google.cloud.storage.BlobId;
 import com.google.common.flogger.GoogleLogger;
@@ -10,9 +11,11 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.function.IntFunction;
+import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
 import org.apache.hadoop.fs.FileSystem;
@@ -44,7 +47,21 @@ public class BidiVectoredIOImpl implements VectoredIO {
         BlobId.of(
             resourceId.getBucketName(), resourceId.getObjectName(), resourceId.getGenerationId());
     try {
-      VectoredIOResult result = gcsFs.getGcs().readVectored(ranges, allocate, blobId);
+      VectoredIOResult result =
+          gcsFs
+              .getGcs()
+              .readVectored(
+                  ranges.stream()
+                      .map(
+                          range ->
+                              VectoredIORange.builder()
+                                  .setLength(range.getLength())
+                                  .setOffset(range.getOffset())
+                                  .setData(new CompletableFuture<>())
+                                  .build())
+                      .collect(Collectors.toList()),
+                  allocate,
+                  blobId);
       updateBytesRead(result.getReadBytes());
       storageStatistics.updateStats(
           GhfsStatistic.STREAM_READ_VECTORED_TOTAL_READ_RANGE_DURATION,

@@ -35,6 +35,7 @@ import com.google.cloud.hadoop.gcsio.ListFolderOptions;
 import com.google.cloud.hadoop.gcsio.ListObjectOptions;
 import com.google.cloud.hadoop.gcsio.StorageResourceId;
 import com.google.cloud.hadoop.gcsio.UpdatableItemInfo;
+import com.google.cloud.hadoop.gcsio.VectoredIORange;
 import com.google.cloud.hadoop.gcsio.VectoredIOResult;
 import com.google.cloud.storage.BlobId;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -53,7 +54,6 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import org.apache.hadoop.fs.FileRange;
 
 /**
  * InMemoryGoogleCloudStorage overrides the public methods of GoogleCloudStorage by implementing all
@@ -484,7 +484,7 @@ public class InMemoryGoogleCloudStorage implements GoogleCloudStorage {
 
   @Override
   public VectoredIOResult readVectored(
-      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
+      List<VectoredIORange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException {
     throw new UnsupportedOperationException("Not Implemented");
   }

@@ -7,7 +7,10 @@ import javax.annotation.Nullable;
 public abstract class VectoredIOResult {
 
   public static Builder builder() {
-    return new AutoValue_VectoredIOResult.Builder().setReadBytes(null);
+    return new AutoValue_VectoredIOResult.Builder()
+        .setReadBytes(null)
+        .setReadDuration(null)
+        .setClientInitializationDuration(null);
   }
 
   public abstract VectoredIOResult.Builder toBuilder();

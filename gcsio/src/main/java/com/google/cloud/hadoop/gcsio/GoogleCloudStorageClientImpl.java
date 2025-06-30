@@ -104,7 +104,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentHashMap.KeySetView;
 import java.util.concurrent.ExecutionException;
@@ -117,7 +116,6 @@ import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
-import org.apache.hadoop.fs.FileRange;
 
 /**
  * Provides read/write access to Google Cloud Storage (GCS), using Java nio channel semantics. This
@@ -719,7 +717,7 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
 
   @Override
   public VectoredIOResult readVectored(
-      List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
+      List<VectoredIORange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
 
     long clientInitializationDurationStartTime = System.currentTimeMillis();
@@ -731,7 +729,7 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
       long clientInitializationDuration =
           System.currentTimeMillis() - clientInitializationDurationStartTime;
 
-      Map<? extends FileRange, ApiFuture<byte[]>> futures =
+      Map<VectoredIORange, ApiFuture<byte[]>> futures =
           ranges.stream()
               .collect(
                   Collectors.toMap(
@@ -768,13 +766,12 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
   }
 
   private <V> int populateFileRangeFuture(
-      byte[] result, IntFunction<ByteBuffer> allocate, FileRange range) {
+      byte[] result, IntFunction<ByteBuffer> allocate, VectoredIORange range) {
     ByteBuffer dst = allocate.apply(result.length);
     System.out.println("Result Length = " + result.length);
     System.out.println("Remaining = " + dst.remaining());
     dst.put(result);
     dst.flip();
-    range.setData(new CompletableFuture<>());
     range.getData().complete(dst);
     return result.length;
   }
