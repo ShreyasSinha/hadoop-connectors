@@ -88,7 +88,6 @@ import com.google.common.collect.Maps;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.io.BaseEncoding;
 import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.ClientInterceptor;
 import java.io.IOException;
@@ -104,11 +103,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentHashMap.KeySetView;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -160,6 +162,10 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
               .setDaemon(true)
               .build());
 
+  private ExecutorService boundedThreadPool;
+
+  private final BlockingQueue taskQueue = new LinkedBlockingQueue<Runnable>();
+
   private static String encodeMetadataValues(byte[] bytes) {
     return bytes == null ? null : BaseEncoding.base64().encode(bytes);
   }
@@ -193,6 +199,17 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
             ? createStorage(
                 credentials, options, gRPCInterceptors, pCUExecutorService, downscopedAccessTokenFn)
             : clientLibraryStorage;
+    this.boundedThreadPool =
+        new ThreadPoolExecutor(
+            16,
+            16,
+            0L,
+            TimeUnit.MILLISECONDS,
+            taskQueue,
+            new ThreadFactoryBuilder()
+                .setNameFormat("vectoredRead-range-pool-%d")
+                .setDaemon(true)
+                .build());
   }
 
   @Override
@@ -749,7 +766,7 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
                   totalBytesRead.addAndGet(populateFileRangeFuture(result, allocate, range));
                   return null;
                 },
-                MoreExecutors.directExecutor());
+                boundedThreadPool);
           });
 
       long rangedReadStartTime = System.currentTimeMillis();
