@@ -35,6 +35,7 @@ import com.google.cloud.hadoop.gcsio.ListFolderOptions;
 import com.google.cloud.hadoop.gcsio.ListObjectOptions;
 import com.google.cloud.hadoop.gcsio.StorageResourceId;
 import com.google.cloud.hadoop.gcsio.UpdatableItemInfo;
+import com.google.cloud.hadoop.gcsio.VectoredIOResult;
 import com.google.cloud.storage.BlobId;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.ByteArrayOutputStream;
@@ -482,7 +483,7 @@ public class InMemoryGoogleCloudStorage implements GoogleCloudStorage {
   }
 
   @Override
-  public void readVectored(
+  public VectoredIOResult readVectored(
       List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException {
     throw new UnsupportedOperationException("Not Implemented");

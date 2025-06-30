@@ -1803,7 +1803,7 @@ public class GoogleCloudStorageImpl implements GoogleCloudStorage {
   }
 
   @Override
-  public void readVectored(
+  public VectoredIOResult readVectored(
       List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException {
     throw new UnsupportedOperationException("Not Implemented");

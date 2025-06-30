@@ -112,6 +112,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
@@ -717,12 +718,19 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
   }
 
   @Override
-  public void readVectored(
+  public VectoredIOResult readVectored(
       List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
 
+    long clientInitializationDurationStartTime = System.currentTimeMillis();
+    AtomicInteger totalBytesRead = new AtomicInteger();
+
     try (BlobReadSession blobReadSession =
         storage.blobReadSession(blobId).get(30, TimeUnit.SECONDS)) {
+
+      long clientInitializationDuration =
+          System.currentTimeMillis() - clientInitializationDurationStartTime;
+
       Map<? extends FileRange, ApiFuture<byte[]>> futures =
           ranges.stream()
               .collect(
@@ -740,53 +748,26 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
             ApiFutures.transform(
                 future,
                 result -> {
-                  populateFileRangeFuture(result, allocate, range);
+                  totalBytesRead.addAndGet(populateFileRangeFuture(result, allocate, range));
                   return null;
                 },
                 MoreExecutors.directExecutor());
           });
 
+      long rangedReadStartTime = System.currentTimeMillis();
       ApiFuture<List<byte[]>> listApiFuture = ApiFutures.allAsList(futures.values());
       listApiFuture.get(30, TimeUnit.SECONDS);
+      long rangedReadTime = System.currentTimeMillis() - rangedReadStartTime;
 
-      // futures.forEach(
-      //     (range, future) -> {
-      //       byte[] result = null;
-      //       try {
-      //         result = future.get(30, TimeUnit.SECONDS);
-      //         ByteBuffer dst = allocate.apply(result.length);
-      //         System.out.println("Result Length = " + result.length);
-      //         System.out.println("Remaining = " + dst.remaining());
-      //         dst.put(result);
-      //         dst.flip();
-      //         range.setData(new CompletableFuture<>());
-      //         range.getData().complete(dst);
-      //       } catch (ExecutionException | InterruptedException | TimeoutException e) {
-      //         throw new RuntimeException(e);
-      //       }
-      //     });
-
-      //   futures.forEach(
-      //       (range, future) -> {
-      //         future.addListener(
-      //             () -> {
-      //               try {
-      //                 byte[] result = future.get(30, TimeUnit.SECONDS);
-      //                 ByteBuffer dst = allocate.apply(result.length);
-      //                 dst.put(result);
-      //                 dst.flip();
-      //                 range.setData(new CompletableFuture<>());
-      //                 range.getData().complete(dst);
-      //               } catch (ExecutionException | InterruptedException | TimeoutException e) {
-      //                 throw new RuntimeException(e);
-      //               }
-      //             },
-      //             MoreExecutors.directExecutor());
-      //       });
+      return VectoredIOResult.builder()
+          .setReadBytes(totalBytesRead.get())
+          .setReadDuration(rangedReadTime)
+          .setClientInitializationDuration(clientInitializationDuration)
+          .build();
     }
   }
 
-  private <V> void populateFileRangeFuture(
+  private <V> int populateFileRangeFuture(
       byte[] result, IntFunction<ByteBuffer> allocate, FileRange range) {
     ByteBuffer dst = allocate.apply(result.length);
     System.out.println("Result Length = " + result.length);
@@ -795,6 +776,7 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
     dst.flip();
     range.setData(new CompletableFuture<>());
     range.getData().complete(dst);
+    return result.length;
   }
 
   /** Creates a builder for a blob move request. */

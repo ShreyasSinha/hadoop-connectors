@@ -219,10 +219,10 @@ public class ForwardingGoogleCloudStorage implements GoogleCloudStorage {
   }
 
   @Override
-  public void readVectored(
+  public VectoredIOResult readVectored(
       List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
-    delegate.readVectored(ranges, allocate, blobId);
+    return delegate.readVectored(ranges, allocate, blobId);
   }
 
   @Override

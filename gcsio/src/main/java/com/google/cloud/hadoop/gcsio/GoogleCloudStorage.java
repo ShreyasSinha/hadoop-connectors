@@ -443,7 +443,7 @@ public interface GoogleCloudStorage {
    * @param gcsPath URI of the gcs object for which the range requests are fired.
    * @throws IOException on IO error
    */
-  void readVectored(
+  VectoredIOResult readVectored(
       List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException;
 

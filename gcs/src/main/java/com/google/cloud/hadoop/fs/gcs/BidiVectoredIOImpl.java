@@ -3,6 +3,7 @@ package com.google.cloud.hadoop.fs.gcs;
 import com.google.cloud.hadoop.gcsio.FileInfo;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageFileSystem;
 import com.google.cloud.hadoop.gcsio.StorageResourceId;
+import com.google.cloud.hadoop.gcsio.VectoredIOResult;
 import com.google.cloud.storage.BlobId;
 import com.google.common.flogger.GoogleLogger;
 import java.io.IOException;
@@ -14,12 +15,20 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.IntFunction;
 import javax.annotation.Nonnull;
 import org.apache.hadoop.fs.FileRange;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileSystem.Statistics;
 
 public class BidiVectoredIOImpl implements VectoredIO {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
+  private final GhfsGlobalStorageStatistics storageStatistics;
+  private final FileSystem.Statistics statistics;
 
-  public BidiVectoredIOImpl() {}
+  public BidiVectoredIOImpl(
+      GhfsGlobalStorageStatistics globalStorageStatistics, Statistics statistics) {
+    this.storageStatistics = globalStorageStatistics;
+    this.statistics = statistics;
+  }
 
   @Override
   public void readVectored(
@@ -35,11 +44,24 @@ public class BidiVectoredIOImpl implements VectoredIO {
         BlobId.of(
             resourceId.getBucketName(), resourceId.getObjectName(), resourceId.getGenerationId());
     try {
-
-      gcsFs.getGcs().readVectored(ranges, allocate, blobId);
+      VectoredIOResult result = gcsFs.getGcs().readVectored(ranges, allocate, blobId);
+      updateBytesRead(result.getReadBytes());
+      storageStatistics.updateStats(
+          GhfsStatistic.STREAM_READ_VECTORED_TOTAL_READ_RANGE_DURATION,
+          result.getReadDuration(),
+          gcsPath);
+      storageStatistics.updateStats(
+          GhfsStatistic.STREAM_READ_VECTORED_CLIENT_INITIALIZATION_DURATION,
+          result.getClientInitializationDuration(),
+          gcsPath);
     } catch (ExecutionException | InterruptedException | TimeoutException e) {
       throw new IOException(e);
     }
+  }
+
+  private void updateBytesRead(int readBytes) {
+    statistics.incrementBytesRead(readBytes);
+    storageStatistics.streamReadBytes(readBytes);
   }
 
   @Override

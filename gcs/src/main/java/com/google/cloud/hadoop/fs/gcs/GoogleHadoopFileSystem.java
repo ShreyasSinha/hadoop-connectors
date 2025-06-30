@@ -399,7 +399,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
                 VectoredIO vectoredIO = null;
                 try {
                   if (true) {
-                    vectoredIO = new BidiVectoredIOImpl();
+                    vectoredIO = new BidiVectoredIOImpl(globalStorageStatistics, statistics);
                   } else {
                     vectoredIO =
                         new VectoredIOImpl(
