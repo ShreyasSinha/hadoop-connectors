@@ -398,7 +398,9 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
               () -> {
                 VectoredIO vectoredIO = null;
                 try {
-                  if (true) {
+                  if (GoogleHadoopFileSystemConfiguration.getGcsOptionsBuilder(config)
+                      .build()
+                      .isBidiApiEnabled()) {
                     vectoredIO = new BidiVectoredIOImpl(globalStorageStatistics, statistics);
                   } else {
                     vectoredIO =

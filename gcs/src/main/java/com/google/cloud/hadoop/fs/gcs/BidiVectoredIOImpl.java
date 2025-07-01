@@ -46,7 +46,7 @@ public class BidiVectoredIOImpl implements VectoredIO {
     BlobId blobId =
         BlobId.of(
             resourceId.getBucketName(), resourceId.getObjectName(), resourceId.getGenerationId());
-    ranges.stream().forEach(range -> range.setData(new CompletableFuture<>()));
+    ranges.forEach(range -> range.setData(new CompletableFuture<>()));
     try {
       VectoredIOResult result =
           gcsFs
