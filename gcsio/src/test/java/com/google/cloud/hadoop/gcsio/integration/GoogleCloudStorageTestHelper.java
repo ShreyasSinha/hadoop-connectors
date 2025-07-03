@@ -25,11 +25,9 @@ import static java.lang.Math.min;
 import static org.junit.Assert.fail;
 
 import com.google.api.client.util.DateTime;
-import com.google.api.services.storage.StorageScopes;
 import com.google.api.services.storage.model.StorageObject;
 import com.google.auth.Credentials;
-import com.google.auth.oauth2.ComputeEngineCredentials;
-import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorage;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageClientImpl;
 import com.google.cloud.hadoop.gcsio.GoogleCloudStorageImpl;
@@ -48,7 +46,6 @@ import com.google.common.collect.Lists;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.io.BaseEncoding;
 import com.google.protobuf.ByteString;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -98,14 +95,7 @@ public class GoogleCloudStorageTestHelper {
   }
 
   public static Credentials getCredentials() throws IOException {
-    String serviceAccountJsonKeyFile =
-        TestConfiguration.getInstance().getServiceAccountJsonKeyFile();
-    if (serviceAccountJsonKeyFile == null) {
-      return ComputeEngineCredentials.create().createScoped(StorageScopes.CLOUD_PLATFORM);
-    }
-    try (FileInputStream fis = new FileInputStream(serviceAccountJsonKeyFile)) {
-      return ServiceAccountCredentials.fromStream(fis).createScoped(StorageScopes.CLOUD_PLATFORM);
-    }
+    return GoogleCredentials.getApplicationDefault();
   }
 
   public static GoogleCloudStorageOptions.Builder getStandardOptionBuilder() {
