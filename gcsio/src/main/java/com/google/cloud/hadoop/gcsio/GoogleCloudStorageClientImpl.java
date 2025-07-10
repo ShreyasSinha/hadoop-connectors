@@ -736,16 +736,14 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
   public VectoredIOResult readVectored(
       List<VectoredIORange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
-
+    logger.atFiner().log("readVectored() called for BlobId=%s",blobId.toString());
     long clientInitializationDurationStartTime = System.currentTimeMillis();
     AtomicInteger totalBytesRead = new AtomicInteger();
-
     try (BlobReadSession blobReadSession =
         storage.blobReadSession(blobId).get(30, TimeUnit.SECONDS)) {
-
       long clientInitializationDuration =
           System.currentTimeMillis() - clientInitializationDurationStartTime;
-
+      logger.atFiner().log("Client Initialization successful in %d", clientInitializationDuration);
       Map<VectoredIORange, ApiFuture<byte[]>> futures =
           ranges.stream()
               .collect(
@@ -756,7 +754,6 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
                               ReadProjectionConfigs.asFutureBytes()
                                   .withRangeSpec(
                                       RangeSpec.of(range.getOffset(), range.getLength())))));
-
       futures.forEach(
           (range, future) -> {
             ApiFutures.transform(
@@ -767,12 +764,11 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
                 },
                 boundedThreadPool);
           });
-
       long rangedReadStartTime = System.currentTimeMillis();
       ApiFuture<List<byte[]>> listApiFuture = ApiFutures.allAsList(futures.values());
       listApiFuture.get(30, TimeUnit.SECONDS);
       long rangedReadTime = System.currentTimeMillis() - rangedReadStartTime;
-
+      logger.atFiner().log("Ranged read successful in %d", rangedReadTime);
       return VectoredIOResult.builder()
           .setReadBytes(totalBytesRead.get())
           .setReadDuration(rangedReadTime)
