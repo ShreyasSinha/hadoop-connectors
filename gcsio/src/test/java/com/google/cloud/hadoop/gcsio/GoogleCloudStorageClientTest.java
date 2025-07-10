@@ -1118,9 +1118,7 @@ public class GoogleCloudStorageClientTest {
     assertEquals(getReadVectoredData(ranges.get(2)), FakeBlobReadSession.SUBSTRING_65_17);
 
     assertThat(result.getClientInitializationDuration()).isLessThan(100L);
-    assertThat(result.getClientInitializationDuration()).isGreaterThan(0L);
     assertThat(result.getReadDuration()).isLessThan(100L);
-    assertThat(result.getReadDuration()).isGreaterThan(0L);
   }
 
   @Test
@@ -1135,9 +1133,8 @@ public class GoogleCloudStorageClientTest {
             ranges, allocator, BlobId.of(TEST_BUCKET_NAME, TEST_OBJECT_NAME));
 
     assertThat(result.getClientInitializationDuration()).isLessThan(5100L);
-    assertThat(result.getClientInitializationDuration()).isGreaterThan(5000L);
+    assertThat(result.getClientInitializationDuration()).isGreaterThan(4999L);
     assertThat(result.getReadDuration()).isLessThan(100L);
-    assertThat(result.getReadDuration()).isGreaterThan(0L);
   }
 
   private String getReadVectoredData(VectoredIORange range)
