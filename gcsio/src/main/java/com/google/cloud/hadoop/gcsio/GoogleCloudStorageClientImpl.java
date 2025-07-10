@@ -756,7 +756,6 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
                               ReadProjectionConfigs.asFutureBytes()
                                   .withRangeSpec(
                                       RangeSpec.of(range.getOffset(), range.getLength())))));
-      System.out.println("Inside Google Cloud Storage Read Vectored flow");
 
       futures.forEach(
           (range, future) -> {
@@ -785,8 +784,6 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
   private <V> int populateFileRangeFuture(
       byte[] result, IntFunction<ByteBuffer> allocate, VectoredIORange range) {
     ByteBuffer dst = allocate.apply(result.length);
-    System.out.println("Result Length = " + result.length);
-    System.out.println("Remaining = " + dst.remaining());
     dst.put(result);
     dst.flip();
     range.getData().complete(dst);
