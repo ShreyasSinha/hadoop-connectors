@@ -33,6 +33,8 @@ import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.util.BackOff;
 import com.google.api.client.util.ExponentialBackOff;
+import com.google.api.core.ApiFuture;
+import com.google.api.core.ApiFutures;
 import com.google.api.gax.paging.Page;
 import com.google.auth.Credentials;
 import com.google.auth.oauth2.AccessToken;
@@ -48,6 +50,7 @@ import com.google.cloud.hadoop.util.GrpcErrorTypeExtractor;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.BlobReadSession;
 import com.google.cloud.storage.BlobWriteSessionConfig;
 import com.google.cloud.storage.BlobWriteSessionConfigs;
 import com.google.cloud.storage.Bucket;
@@ -59,6 +62,8 @@ import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.Bu
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.ExecutorSupplier;
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.PartCleanupStrategy;
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.PartNamingStrategy;
+import com.google.cloud.storage.RangeSpec;
+import com.google.cloud.storage.ReadProjectionConfigs;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobField;
 import com.google.cloud.storage.Storage.BlobGetOption;
@@ -86,6 +91,7 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.ClientInterceptor;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.FileAlreadyExistsException;
@@ -97,11 +103,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentHashMap.KeySetView;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
@@ -148,6 +162,10 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
               .setDaemon(true)
               .build());
 
+  private ExecutorService boundedThreadPool;
+
+  private final BlockingQueue taskQueue = new LinkedBlockingQueue<Runnable>();
+
   private static String encodeMetadataValues(byte[] bytes) {
     return bytes == null ? null : BaseEncoding.base64().encode(bytes);
   }
@@ -181,6 +199,17 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
             ? createStorage(
                 credentials, options, gRPCInterceptors, pCUExecutorService, downscopedAccessTokenFn)
             : clientLibraryStorage;
+    this.boundedThreadPool =
+        new ThreadPoolExecutor(
+            16,
+            16,
+            0L,
+            TimeUnit.MILLISECONDS,
+            taskQueue,
+            new ThreadFactoryBuilder()
+                .setNameFormat("vectoredRead-range-pool-%d")
+                .setDaemon(true)
+                .build());
   }
 
   @Override
@@ -701,6 +730,60 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
       bucketInfos.add(createItemInfoForBucket(new StorageResourceId(bucket.getName()), bucket));
     }
     return bucketInfos;
+  }
+
+  @Override
+  public VectoredIOResult readVectored(
+      List<VectoredIORange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
+      throws IOException, ExecutionException, InterruptedException, TimeoutException {
+    logger.atFiner().log("readVectored() called for BlobId=%s",blobId.toString());
+    long clientInitializationDurationStartTime = System.currentTimeMillis();
+    AtomicInteger totalBytesRead = new AtomicInteger();
+    try (BlobReadSession blobReadSession =
+        storage.blobReadSession(blobId).get(30, TimeUnit.SECONDS)) {
+      long clientInitializationDuration =
+          System.currentTimeMillis() - clientInitializationDurationStartTime;
+      logger.atFiner().log("Client Initialization successful in %d", clientInitializationDuration);
+      Map<VectoredIORange, ApiFuture<byte[]>> futures =
+          ranges.stream()
+              .collect(
+                  Collectors.toMap(
+                      Function.identity(),
+                      range ->
+                          blobReadSession.readAs(
+                              ReadProjectionConfigs.asFutureBytes()
+                                  .withRangeSpec(
+                                      RangeSpec.of(range.getOffset(), range.getLength())))));
+      futures.forEach(
+          (range, future) -> {
+            ApiFutures.transform(
+                future,
+                result -> {
+                  totalBytesRead.addAndGet(populateFileRangeFuture(result, allocate, range));
+                  return null;
+                },
+                boundedThreadPool);
+          });
+      long rangedReadStartTime = System.currentTimeMillis();
+      ApiFuture<List<byte[]>> listApiFuture = ApiFutures.allAsList(futures.values());
+      listApiFuture.get(30, TimeUnit.SECONDS);
+      long rangedReadTime = System.currentTimeMillis() - rangedReadStartTime;
+      logger.atFiner().log("Ranged read successful in %d", rangedReadTime);
+      return VectoredIOResult.builder()
+          .setReadBytes(totalBytesRead.get())
+          .setReadDuration(rangedReadTime)
+          .setClientInitializationDuration(clientInitializationDuration)
+          .build();
+    }
+  }
+
+  private <V> int populateFileRangeFuture(
+      byte[] result, IntFunction<ByteBuffer> allocate, VectoredIORange range) {
+    ByteBuffer dst = allocate.apply(result.length);
+    dst.put(result);
+    dst.flip();
+    range.getData().complete(dst);
+    return result.length;
   }
 
   /** Creates a builder for a blob move request. */

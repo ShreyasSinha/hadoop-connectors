@@ -132,6 +132,14 @@ public enum GhfsStatistic {
   STREAM_READ_VECTORED_READ_RANGE_DURATION(
       "stream_readVectored_range_duration", "Latency of individual FileRange", TYPE_DURATION),
 
+  STREAM_READ_VECTORED_TOTAL_READ_RANGE_DURATION(
+      "stream_readVectored_total_range_duration", "Latency of all the FileRange", TYPE_DURATION),
+
+  STREAM_READ_VECTORED_CLIENT_INITIALIZATION_DURATION(
+      "stream_readVectored_client_initialization_duration",
+      "Latency of client initialization",
+      TYPE_DURATION),
+
   STREAM_READ_VECTORED_READ_INCOMING_RANGES(
       StreamStatisticNames.STREAM_READ_VECTORED_INCOMING_RANGES,
       "size of fileRanges requested in readVectoredRequest",
