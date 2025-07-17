@@ -19,14 +19,19 @@ package com.google.cloud.hadoop.gcsio;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.api.services.storage.model.Folder;
+import com.google.cloud.storage.BlobId;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.function.IntFunction;
 
 /**
  * Interface for exposing the Google Cloud Storage API behavior in a way more amenable to writing
@@ -426,6 +431,20 @@ public interface GoogleCloudStorage {
       ListFolderOptions listFolderOptions,
       String pageToken)
       throws IOException;
+
+  /**
+   * Reads data from Google Cloud Storage using vectored I/O operations.
+   *
+   * @param ranges List of file ranges to read.
+   * @param allocate Function to allocate ByteBuffer for reading.
+   * @param fileInfo FileInfo of the gcs object agaisnt which range request are fired, this can be
+   *     null for some code path fall back to URI path provided.
+   * @param gcsPath URI of the gcs object for which the range requests are fired.
+   * @throws IOException on IO error
+   */
+  VectoredIOResult readVectored(
+      List<VectoredIORange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
+      throws IOException, ExecutionException, InterruptedException, TimeoutException;
 
   /**
    * Gets information about an object or a bucket.

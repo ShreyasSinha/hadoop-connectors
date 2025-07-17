@@ -214,7 +214,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
   /** Underlying GCS file system object. */
   private Supplier<GoogleCloudStorageFileSystem> gcsFsSupplier;
 
-  private Supplier<VectoredIOImpl> vectoredIOSupplier;
+  private Supplier<VectoredIO> vectoredIOSupplier;
 
   private boolean gcsFsInitialized = false;
   private boolean vectoredIOInitialized = false;
@@ -396,13 +396,20 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
       vectoredIOSupplier =
           Suppliers.memoize(
               () -> {
+                VectoredIO vectoredIO = null;
                 try {
-                  VectoredIOImpl vectoredIO =
-                      new VectoredIOImpl(
-                          GoogleHadoopFileSystemConfiguration.getVectoredReadOptionBuilder(config)
-                              .build(),
-                          globalStorageStatistics,
-                          statistics);
+                  if (GoogleHadoopFileSystemConfiguration.getGcsOptionsBuilder(config)
+                      .build()
+                      .isBidiApiEnabled()) {
+                    vectoredIO = new BidiVectoredIOImpl(globalStorageStatistics, statistics);
+                  } else {
+                    vectoredIO =
+                        new VectoredIOImpl(
+                            GoogleHadoopFileSystemConfiguration.getVectoredReadOptionBuilder(config)
+                                .build(),
+                            globalStorageStatistics,
+                            statistics);
+                  }
                   vectoredIOInitialized = true;
                   return vectoredIO;
                 } catch (Exception e) {
@@ -1680,7 +1687,7 @@ public class GoogleHadoopFileSystem extends FileSystem implements IOStatisticsSo
     return gcsFsSupplier.get();
   }
 
-  public Supplier<VectoredIOImpl> getVectoredIOSupplier() {
+  public Supplier<VectoredIO> getVectoredIOSupplier() {
     return vectoredIOSupplier;
   }
 

@@ -33,6 +33,8 @@ import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.util.BackOff;
 import com.google.api.client.util.ExponentialBackOff;
+import com.google.api.core.ApiFuture;
+import com.google.api.core.ApiFutures;
 import com.google.api.gax.paging.Page;
 import com.google.auth.Credentials;
 import com.google.auth.oauth2.AccessToken;
@@ -48,6 +50,7 @@ import com.google.cloud.hadoop.util.GrpcErrorTypeExtractor;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.BlobReadSession;
 import com.google.cloud.storage.BlobWriteSessionConfig;
 import com.google.cloud.storage.BlobWriteSessionConfigs;
 import com.google.cloud.storage.Bucket;
@@ -59,6 +62,8 @@ import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.Bu
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.ExecutorSupplier;
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.PartCleanupStrategy;
 import com.google.cloud.storage.ParallelCompositeUploadBlobWriteSessionConfig.PartNamingStrategy;
+import com.google.cloud.storage.RangeSpec;
+import com.google.cloud.storage.ReadProjectionConfigs;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobField;
 import com.google.cloud.storage.Storage.BlobGetOption;
@@ -86,6 +91,7 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.grpc.ClientInterceptor;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.FileAlreadyExistsException;
@@ -97,11 +103,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentHashMap.KeySetView;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
@@ -148,6 +162,10 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
               .setDaemon(true)
               .build());
 
+  private ExecutorService boundedThreadPool;
+
+  private final BlockingQueue taskQueue = new LinkedBlockingQueue<Runnable>();
+
   private static String encodeMetadataValues(byte[] bytes) {
     return bytes == null ? null : BaseEncoding.base64().encode(bytes);
   }
@@ -181,6 +199,17 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
             ? createStorage(
                 credentials, options, gRPCInterceptors, pCUExecutorService, downscopedAccessTokenFn)
             : clientLibraryStorage;
+    this.boundedThreadPool =
+        new ThreadPoolExecutor(
+            16,
+            16,
+            0L,
+            TimeUnit.MILLISECONDS,
+            taskQueue,
+            new ThreadFactoryBuilder()
+                .setNameFormat("vectoredRead-range-pool-%d")
+                .setDaemon(true)
+                .build());
   }
 
   @Override
@@ -701,6 +730,99 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
       bucketInfos.add(createItemInfoForBucket(new StorageResourceId(bucket.getName()), bucket));
     }
     return bucketInfos;
+  }
+
+  @Override
+  public VectoredIOResult readVectored(
+      List<VectoredIORange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
+      throws IOException, ExecutionException, InterruptedException, TimeoutException {
+    logger.atFiner().log("readVectored() called for BlobId=%s", blobId.toString());
+    long clientInitializationDurationStartTime = System.currentTimeMillis();
+    AtomicInteger totalBytesRead = new AtomicInteger();
+    // start opening the BlobReadSession
+    ApiFuture<BlobReadSession> sessionFuture = storage.blobReadSession(blobId);
+    AtomicInteger readCounter = new AtomicInteger(0);
+
+    ApiFuture<ApiFuture<List<Object>>> sessionUsage = ApiFutures.transform(sessionFuture, session -> {
+          long clientInitializationDuration =
+              System.currentTimeMillis() - clientInitializationDurationStartTime;
+          logger.atFiner().log("Client Initialization successful in %d", clientInitializationDuration);
+          long rangedReadStartTime = System.currentTimeMillis();
+          List<ApiFuture<?>> transformFutures = ranges.stream()
+              .map(range -> {
+                ApiFuture<DisposableByteString> futureBytes = session.readAs(
+                    ReadProjectionConfigs.asFutureByteString()
+                        .withRangeSpec(RangeSpec.of(range.getOffset(), range.getLength())));
+                readCounter.getAndIncrement();
+                ApiFutures.addCallback(futureBytes, new ApiFutureCallback<>() {
+                  @Override
+                  public void onFailure(Throwable t) {
+                    range.getData().completeExceptionally(t);
+                    if (readCounter.decrementAndGet() == 0) {
+                      try {
+                        session.close();
+                      } catch (IOException e) {
+                        throw new RuntimeException(e);
+                      }
+                    }
+                  }
+
+                  @Override
+                  public void onSuccess(DisposableByteString disposableByteString) {
+                    // wrap in try-with to ensure it is closed and the netty memory will be cleared
+                    try (DisposableByteString dbs = disposableByteString) {
+                      ByteString byteString = dbs.byteString();
+                      int size = byteString.size();
+                      ByteBuffer buf = ByteBuffer.allocate(size);
+                      // iterate over the sub-buffers that make up the ByteString to avoid any copying
+                      // of bytes into the heap before we copy them into buf
+                      for (ByteBuffer b : byteString.asReadOnlyByteBufferList()) {
+                        buf.put(b);
+                      }
+                      buf.flip();
+                      totalBytesRead.addAndGet(size);
+                      range.getData().complete(buf);
+                      if (readCounter.decrementAndGet() == 0) {
+                        session.close();
+                      }
+                    } catch (IOException e) {
+                      throw new RuntimeException(e);
+                    }
+                  }
+                }, boundedThreadPool);
+                return futureBytes;
+              })
+              .collect(Collectors.toList());
+          // We need to wait for the futures before exiting the try-with-resources in order to avoid
+          // parent stream closed exception.
+          ApiFuture<List<Object>> listApiFuture = ApiFutures.allAsList(transformFutures);
+          return listApiFuture;
+        },
+        boundedThreadPool);
+
+    ApiFutures.addCallback(sessionUsage, new ApiFutureCallback<>() {
+      @Override
+      public void onFailure(Throwable t) {
+        for (VectoredIORange range : ranges) {
+          range.getData().completeExceptionally(t);
+        }
+      }
+
+      @Override
+      public void onSuccess(ApiFuture<List<Object>> result) {
+        // do nothing
+      }
+    }, boundedThreadPool);
+    }
+  }
+
+  private <V> int populateFileRangeFuture(
+      byte[] result, IntFunction<ByteBuffer> allocate, VectoredIORange range) {
+    ByteBuffer dst = allocate.apply(result.length);
+    dst.put(result);
+    dst.flip();
+    range.getData().complete(dst);
+    return result.length;
   }
 
   /** Creates a builder for a blob move request. */

@@ -562,6 +562,11 @@ public class GoogleHadoopFileSystemConfiguration {
           "fs.gs.operation.move.enable",
           GoogleCloudStorageOptions.DEFAULT.isMoveOperationEnabled());
 
+  /** Configuration key for enabling bidi API for Rapid Storage in gcs. */
+  public static final HadoopConfigurationProperty<Boolean> GCS_OPERATION_BIDI_API_ENABLE =
+      new HadoopConfigurationProperty<>(
+          "fs.gs.operation.bidi.enable", GoogleCloudStorageOptions.DEFAULT.isBidiApiEnabled());
+
   static GoogleCloudStorageFileSystemOptions.Builder getGcsFsOptionsBuilder(Configuration config) {
     return GoogleCloudStorageFileSystemOptions.builder()
         .setBucketDeleteEnabled(GCE_BUCKET_DELETE_ENABLE.get(config, config::getBoolean))
@@ -625,7 +630,8 @@ public class GoogleHadoopFileSystemConfiguration {
         .setOperationTraceLogEnabled(GCS_OPERATION_TRACE_LOG_ENABLE.get(config, config::getBoolean))
         .setTrafficDirectorEnabled(GCS_GRPC_TRAFFICDIRECTOR_ENABLE.get(config, config::getBoolean))
         .setWriteChannelOptions(getWriteChannelOptions(config))
-        .setMoveOperationEnabled(GCS_OPERATION_MOVE_ENABLE.get(config, config::getBoolean));
+        .setMoveOperationEnabled(GCS_OPERATION_MOVE_ENABLE.get(config, config::getBoolean))
+        .setBidiApiEnabled(GCS_OPERATION_BIDI_API_ENABLE.get(config, config::getBoolean));
   }
 
   @VisibleForTesting
