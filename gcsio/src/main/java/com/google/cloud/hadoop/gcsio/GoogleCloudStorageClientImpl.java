@@ -736,44 +736,83 @@ public class GoogleCloudStorageClientImpl extends ForwardingGoogleCloudStorage {
   public VectoredIOResult readVectored(
       List<VectoredIORange> ranges, IntFunction<ByteBuffer> allocate, BlobId blobId)
       throws IOException, ExecutionException, InterruptedException, TimeoutException {
-    logger.atFiner().log("readVectored() called for BlobId=%s",blobId.toString());
+    logger.atFiner().log("readVectored() called for BlobId=%s", blobId.toString());
     long clientInitializationDurationStartTime = System.currentTimeMillis();
     AtomicInteger totalBytesRead = new AtomicInteger();
-    try (BlobReadSession blobReadSession =
-        storage.blobReadSession(blobId).get(30, TimeUnit.SECONDS)) {
-      long clientInitializationDuration =
-          System.currentTimeMillis() - clientInitializationDurationStartTime;
-      logger.atFiner().log("Client Initialization successful in %d", clientInitializationDuration);
-      Map<VectoredIORange, ApiFuture<byte[]>> futures =
-          ranges.stream()
-              .collect(
-                  Collectors.toMap(
-                      Function.identity(),
-                      range ->
-                          blobReadSession.readAs(
-                              ReadProjectionConfigs.asFutureBytes()
-                                  .withRangeSpec(
-                                      RangeSpec.of(range.getOffset(), range.getLength())))));
-      futures.forEach(
-          (range, future) -> {
-            ApiFutures.transform(
-                future,
-                result -> {
-                  totalBytesRead.addAndGet(populateFileRangeFuture(result, allocate, range));
-                  return null;
-                },
-                boundedThreadPool);
-          });
-      long rangedReadStartTime = System.currentTimeMillis();
-      ApiFuture<List<byte[]>> listApiFuture = ApiFutures.allAsList(futures.values());
-      listApiFuture.get(30, TimeUnit.SECONDS);
-      long rangedReadTime = System.currentTimeMillis() - rangedReadStartTime;
-      logger.atFiner().log("Ranged read successful in %d", rangedReadTime);
-      return VectoredIOResult.builder()
-          .setReadBytes(totalBytesRead.get())
-          .setReadDuration(rangedReadTime)
-          .setClientInitializationDuration(clientInitializationDuration)
-          .build();
+    // start opening the BlobReadSession
+    ApiFuture<BlobReadSession> sessionFuture = storage.blobReadSession(blobId);
+    AtomicInteger readCounter = new AtomicInteger(0);
+
+    ApiFuture<ApiFuture<List<Object>>> sessionUsage = ApiFutures.transform(sessionFuture, session -> {
+          long clientInitializationDuration =
+              System.currentTimeMillis() - clientInitializationDurationStartTime;
+          logger.atFiner().log("Client Initialization successful in %d", clientInitializationDuration);
+          long rangedReadStartTime = System.currentTimeMillis();
+          List<ApiFuture<?>> transformFutures = ranges.stream()
+              .map(range -> {
+                ApiFuture<DisposableByteString> futureBytes = session.readAs(
+                    ReadProjectionConfigs.asFutureByteString()
+                        .withRangeSpec(RangeSpec.of(range.getOffset(), range.getLength())));
+                readCounter.getAndIncrement();
+                ApiFutures.addCallback(futureBytes, new ApiFutureCallback<>() {
+                  @Override
+                  public void onFailure(Throwable t) {
+                    range.getData().completeExceptionally(t);
+                    if (readCounter.decrementAndGet() == 0) {
+                      try {
+                        session.close();
+                      } catch (IOException e) {
+                        throw new RuntimeException(e);
+                      }
+                    }
+                  }
+
+                  @Override
+                  public void onSuccess(DisposableByteString disposableByteString) {
+                    // wrap in try-with to ensure it is closed and the netty memory will be cleared
+                    try (DisposableByteString dbs = disposableByteString) {
+                      ByteString byteString = dbs.byteString();
+                      int size = byteString.size();
+                      ByteBuffer buf = ByteBuffer.allocate(size);
+                      // iterate over the sub-buffers that make up the ByteString to avoid any copying
+                      // of bytes into the heap before we copy them into buf
+                      for (ByteBuffer b : byteString.asReadOnlyByteBufferList()) {
+                        buf.put(b);
+                      }
+                      buf.flip();
+                      totalBytesRead.addAndGet(size);
+                      range.getData().complete(buf);
+                      if (readCounter.decrementAndGet() == 0) {
+                        session.close();
+                      }
+                    } catch (IOException e) {
+                      throw new RuntimeException(e);
+                    }
+                  }
+                }, boundedThreadPool);
+                return futureBytes;
+              })
+              .collect(Collectors.toList());
+          // We need to wait for the futures before exiting the try-with-resources in order to avoid
+          // parent stream closed exception.
+          ApiFuture<List<Object>> listApiFuture = ApiFutures.allAsList(transformFutures);
+          return listApiFuture;
+        },
+        boundedThreadPool);
+
+    ApiFutures.addCallback(sessionUsage, new ApiFutureCallback<>() {
+      @Override
+      public void onFailure(Throwable t) {
+        for (VectoredIORange range : ranges) {
+          range.getData().completeExceptionally(t);
+        }
+      }
+
+      @Override
+      public void onSuccess(ApiFuture<List<Object>> result) {
+        // do nothing
+      }
+    }, boundedThreadPool);
     }
   }
 
